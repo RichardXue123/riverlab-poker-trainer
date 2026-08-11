@@ -2,17 +2,20 @@
 
 一个完全本地运行的八人桌无限注德州扑克训练器。玩家使用虚拟筹码与七名带隐藏个性的 AI 对战，可选择边打边教、赛后指导或纯对战模式。
 
-## 本地启动
+## 普通玩家下载
 
-双击 `启动德扑训练器.cmd`。程序会启动仅监听 `127.0.0.1` 的本地服务，并在浏览器打开训练器。
+本仓库页面提供的是源代码。请不要使用 **Code → Download ZIP** 作为游戏安装包，它不能直接运行。普通玩家应前往 [Releases](https://github.com/oneGithubuser1/riverlab-poker-trainer/releases) 下载名称中带有 `Windows-Portable` 的便携版，完整解压后按照压缩包内的使用说明运行。
 
-也可以在终端运行：
+## 从源码运行
+
+源码使用者需要先安装 Node.js 22.13 或更高版本，然后执行：
 
 ```powershell
+npm ci
 npm run dev:local
 ```
 
-然后打开 `http://localhost:4311`。
+再打开 `http://localhost:4311`。
 
 ## 数据与隐私
 
