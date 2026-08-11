@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "enabled": false,
+  "policyId": "baseline-untrained",
+  "promotedAt": null,
+  "trainingSeed": null,
+  "evaluatedHands": 0,
+  "fitness": 0,
+  "genes": {
+    "looseness": 0.34,
+    "aggression": 0.62,
+    "bluff": 0.46,
+    "trapping": 0.44,
+    "calling": 0.42,
+    "risk": 0.52,
+    "sizing": 0.60,
+    "adaptability": 0.68
+  }
+}
