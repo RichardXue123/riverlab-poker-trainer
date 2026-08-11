@@ -129,8 +129,10 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .primary-button { color: var(--forest-3); border: 1px solid var(--gold); background: var(--gold-light); }
 .primary-button span { margin-left: 14px; }
 .secondary-button { color: inherit; border: 1px solid currentColor; background: transparent; }
-.data-footer { display: flex; justify-content: space-between; padding-top: 18px; padding-bottom: 40px; color: var(--muted); border-top: 1px solid var(--line); font-size: 11px; }
-.data-footer div { display: flex; gap: 14px; }
+.data-footer { display: flex; justify-content: space-between; gap: 28px; padding-top: 18px; padding-bottom: 40px; color: var(--muted); border-top: 1px solid var(--line); font-size: 11px; }
+.data-footer-copy { display: flex; max-width: 760px; flex-direction: column; gap: 6px; line-height: 1.6; }
+.data-footer-copy small { color: #847b6a; font-size: 10px; }
+.data-footer-actions { display: flex; flex: 0 0 auto; gap: 14px; align-items: flex-start; }
 .data-footer button { padding: 0; border: 0; background: none; color: #44514b; cursor: pointer; }
 .data-footer .danger-link { color: #a44a45; }
 

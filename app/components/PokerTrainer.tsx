@@ -288,8 +288,11 @@ function Lobby({
       </section>
 
       <footer className="data-footer">
-        <span>所有牌局与生涯数据只存在当前浏览器。</span>
-        <div>
+        <section className="data-footer-copy">
+          <span>所有牌局与生涯数据只存在当前浏览器。</span>
+          <small>免责声明：仅供扑克规则、概率与策略学习及娱乐使用；虚拟筹码不具有现金价值，教练建议不保证收益，也不构成赌博、投资或财务建议。请遵守所在地法律法规。</small>
+        </section>
+        <div className="data-footer-actions">
           <button onClick={() => exportProfile(profile)}>导出 JSON</button>
           <button onClick={() => fileRef.current?.click()}>导入</button>
           <button className="danger-link" onClick={() => { if (window.confirm("确定清空全部本地生涯数据？此操作无法撤销。")) onProfile(clearStoredProfile()); }}>重置生涯</button>
