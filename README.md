@@ -2,16 +2,31 @@
 
 一个完全本地运行的八人桌无限注德州扑克训练器。玩家使用虚拟筹码与七名带隐藏个性的 AI 对战，可选择边打边教、赛后指导或纯对战模式。
 
-## 普通玩家下载
+## 下载源码与安装
 
-本仓库页面提供的是源代码。请不要使用 **Code → Download ZIP** 作为游戏安装包，它不能直接运行。普通玩家应前往 [Releases](https://github.com/oneGithubuser1/riverlab-poker-trainer/releases) 下载名称中带有 `Windows-Portable` 的便携版，完整解压后按照压缩包内的使用说明运行。
+### 方式一：使用 Git 下载（推荐）
 
-## 从源码运行
+先安装 Git，以及 Node.js 22.13 或更高版本。然后打开 PowerShell：
 
-源码使用者需要先安装 Node.js 22.13 或更高版本，然后执行：
+```powershell
+git clone https://github.com/oneGithubuser1/riverlab-poker-trainer.git
+cd riverlab-poker-trainer
+npm ci
+```
+
+### 方式二：下载源码 ZIP
+
+在 GitHub 点击 **Code → Download ZIP**，完整解压后，在该目录打开 PowerShell 并执行：
 
 ```powershell
 npm ci
+```
+
+## 不训练，直接运行游戏
+
+源码已经包含默认 AI 策略，不训练也能玩：
+
+```powershell
 npm run dev:local
 ```
 
@@ -34,6 +49,7 @@ npm run dev:local
 - 盲注从 5/10 开始，每 8 手提升一级。筹码归零后直接淘汰，玩家和 AI 都不能重新买入或补码。
 - 冠军、亚军、季军分别获得 5,000、2,000、1,000 生涯训练币；只有玩家自己的名次奖励会加入钱包。
 - 玩家出局后可以直接模拟剩余 AI 的公平摊牌并进入最终排名界面；相同种子会得到相同结果。
+
 ## AI 与教练
 
 - AI 不再只用“范围宽度”概括对手，而是维护一组具体两张牌组合；位置、翻前加注深度、每条街的公开动作与下注尺度会逐步更新各组合权重。
@@ -92,6 +108,7 @@ npm run validate:ai -- --run training-output/<run-id> --candidate training-outpu
 短训练只用于验证流程，几手牌产生的 BB/100 没有统计意义。训练累计不少于 500 张桌面手牌后，可以在命令末尾增加 `--promote`，把最佳策略晋级到高手 AI；标准 AI 只使用较小比例的训练结果。晋级必须显式执行，避免偶然冠军自动污染正式游戏。`--force-promote` 仅供调试。
 
 日志只记录相对目录，不写入 Windows 用户目录、电脑名或浏览器数据；整个训练过程不联网。
+
 ## 验证
 
 ```powershell
