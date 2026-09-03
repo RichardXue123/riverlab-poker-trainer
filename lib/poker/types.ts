@@ -411,6 +411,8 @@ export interface CareerProfile {
     stakeId: string;
     soundMuted: boolean;
     soundVolume: number;
+    bgmMuted: boolean;
+    bgmVolume: number;
   };
 }
 

@@ -9,19 +9,21 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "vinext start",
-    "test": "tsx --test tests/poker.test.ts",
+    "test": "tsx --test tests/*.test.ts",
     "train:ai": "tsx training/cli.ts",
     "train:ai:smoke": "tsx training/cli.ts --generations 1 --population 8 --hands 2 --rounds 1 --iterations 6 --seed smoke",
     "validate:ai": "tsx training/validate.ts",
     "select:ai": "tsx training/tournament.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "dev:local": "vinext dev --host localhost --port 4311",
+    "dev:local": "vinext dev -H 0.0.0.0 -p 4311",
     "check": "tsc --noEmit --skipLibCheck"
   },
   "dependencies": {
+    "@types/ws": "^8.18.1",
     "next": "16.2.6",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.2.1",
@@ -34,6 +36,7 @@
     "eslint-config-next": "16.2.6",
     "react-server-dom-webpack": "19.2.6",
     "tailwindcss": "4.2.1",
+    "tsx": "^4.23.13",
     "typescript": "5.9.3",
     "vinext": "0.0.50",
     "vite": "8.0.13"

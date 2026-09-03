@@ -29,6 +29,8 @@ export function createDefaultProfile(): CareerProfile {
       stakeId: "5-10",
       soundMuted: false,
       soundVolume: 0.55,
+      bgmMuted: false,
+      bgmVolume: 0.35,
     },
   };
 }

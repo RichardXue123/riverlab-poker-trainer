@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createSeatRoster, chooseBotAction, driftBotsForNextHand } from "@/lib/poker/ai";
 import { RANK_SYMBOL, SUIT_SYMBOL } from "@/lib/poker/cards";
 import { buildCoachAdvice, createHandReview, GLOSSARY, rateDecision } from "@/lib/poker/coach";
+import MultiplayerLobby from "./MultiplayerLobby";
+import MultiplayerTable from "./MultiplayerTable";
+import type { ClientMessage, MultiplayerTableState, RoomSummary, ServerMessage } from "@/server/multiplayer-types";
 import {
   ACTION_LABELS,
   STREET_LABELS,
@@ -16,6 +19,7 @@ import {
 } from "@/lib/poker/engine";
 import { makeSeed } from "@/lib/poker/rng";
 import { playPokerSound, unlockPokerAudio } from "@/lib/poker/sound";
+import { bgm, getBgmStageFromMultiplayer, getBgmStageFromSinglePlayer, type BgmStage } from "@/lib/poker/bgm";
 import {
   clearStoredProfile,
   createDefaultProfile,
@@ -77,7 +81,7 @@ const DIFFICULTY_COPY: Record<Difficulty, string> = {
   expert: "高手",
 };
 
-function formatChips(value: number): string {
+export function formatChips(value: number): string {
   return new Intl.NumberFormat("zh-CN").format(Math.floor(value));
 }
 
@@ -101,40 +105,75 @@ function StatPill({ label, value }: { label: string; value: string }) {
   return <span className="stat-pill"><b>{label}</b>{value}</span>;
 }
 
-function SoundControl({
-  muted,
-  volume,
-  onMuted,
-  onVolume,
+export function AudioControls({
+  soundMuted,
+  soundVolume,
+  onSoundMuted,
+  onSoundVolume,
+  bgmMuted,
+  bgmVolume,
+  onBgmMuted,
+  onBgmVolume,
 }: {
-  muted: boolean;
-  volume: number;
-  onMuted: (muted: boolean) => void;
-  onVolume: (volume: number) => void;
+  soundMuted: boolean;
+  soundVolume: number;
+  onSoundMuted: (muted: boolean) => void;
+  onSoundVolume: (volume: number) => void;
+  bgmMuted: boolean;
+  bgmVolume: number;
+  onBgmMuted: (muted: boolean) => void;
+  onBgmVolume: (volume: number) => void;
 }) {
-  const toggle = () => {
-    const nextMuted = !muted;
+  const toggleBgm = () => {
+    void unlockPokerAudio();
+    void bgm.unlock();
+    onBgmMuted(!bgmMuted);
+  };
+
+  const toggleSound = () => {
+    const nextMuted = !soundMuted;
     void unlockPokerAudio().then(() => {
-      if (!nextMuted) playPokerSound("turn", volume);
+      if (!nextMuted) playPokerSound("turn", soundVolume);
     });
-    onMuted(nextMuted);
+    onSoundMuted(nextMuted);
   };
 
   return (
-    <div className="sound-control" aria-label="????">
-      <button type="button" onClick={toggle} aria-pressed={muted} title={muted ? "????" : "??"}>
-        <span aria-hidden="true">{muted ? "??" : "??"}</span>
-      </button>
-      <input
-        aria-label="????"
-        type="range"
-        min="0"
-        max="1"
-        step="0.05"
-        value={muted ? 0 : volume}
-        onPointerDown={() => void unlockPokerAudio()}
-        onChange={(event) => onVolume(Number(event.target.value))}
-      />
+    <div className="audio-controls-group" aria-label="全局音频控制">
+      <div className="sound-control" title="背景音乐 (BGM)">
+        <button type="button" onClick={toggleBgm} aria-pressed={bgmMuted} title={bgmMuted ? "开启背景音乐" : "静音背景音乐"}>
+          <span aria-hidden="true">{bgmMuted ? "🔇" : "🎵"}</span>
+        </button>
+        <input
+          aria-label="背景音乐音量"
+          type="range"
+          min="0"
+          max="1"
+          step="0.05"
+          value={bgmMuted ? 0 : bgmVolume}
+          onPointerDown={() => {
+            void unlockPokerAudio();
+            void bgm.unlock();
+          }}
+          onChange={(event) => onBgmVolume(Number(event.target.value))}
+        />
+      </div>
+
+      <div className="sound-control" title="游戏音效 (SFX)">
+        <button type="button" onClick={toggleSound} aria-pressed={soundMuted} title={soundMuted ? "开启音效" : "静音音效"}>
+          <span aria-hidden="true">{soundMuted ? "🔇" : "🔊"}</span>
+        </button>
+        <input
+          aria-label="游戏音效音量"
+          type="range"
+          min="0"
+          max="1"
+          step="0.05"
+          value={soundMuted ? 0 : soundVolume}
+          onPointerDown={() => void unlockPokerAudio()}
+          onChange={(event) => onSoundVolume(Number(event.target.value))}
+        />
+      </div>
     </div>
   );
 }
@@ -142,10 +181,12 @@ function Lobby({
   profile,
   onProfile,
   onStart,
+  onSwitchToMultiplayer,
 }: {
   profile: CareerProfile;
   onProfile: (profile: CareerProfile) => void;
   onStart: () => void;
+  onSwitchToMultiplayer: () => void;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const stake = STAKES.find((item) => item.id === profile.preferences.stakeId) ?? STAKES[0];
@@ -175,13 +216,29 @@ function Lobby({
           <span className="brand-mark">R</span>
           <div><strong>RiverLab</strong><span>德扑训练室</span></div>
         </div>
-        <SoundControl
-          muted={profile.preferences.soundMuted}
-          volume={profile.preferences.soundVolume}
-          onMuted={(soundMuted) => updatePreference("soundMuted", soundMuted)}
-          onVolume={(soundVolume) => {
+        <div className="lobby-mode-switch">
+          <button type="button" className="active">🤖 单机训练</button>
+          <button type="button" onClick={onSwitchToMultiplayer}>🌐 局域网联机</button>
+        </div>
+        <AudioControls
+          soundMuted={profile.preferences.soundMuted}
+          soundVolume={profile.preferences.soundVolume}
+          onSoundMuted={(soundMuted) => updatePreference("soundMuted", soundMuted)}
+          onSoundVolume={(soundVolume) => {
             void unlockPokerAudio();
             onProfile({ ...profile, preferences: { ...profile.preferences, soundVolume, soundMuted: soundVolume === 0 } });
+          }}
+          bgmMuted={profile.preferences.bgmMuted}
+          bgmVolume={profile.preferences.bgmVolume}
+          onBgmMuted={(bgmMuted) => {
+            void bgm.unlock();
+            bgm.setMuted(bgmMuted);
+            updatePreference("bgmMuted", bgmMuted);
+          }}
+          onBgmVolume={(bgmVolume) => {
+            void bgm.unlock();
+            bgm.setVolume(bgmVolume);
+            onProfile({ ...profile, preferences: { ...profile.preferences, bgmVolume, bgmMuted: bgmVolume === 0 } });
           }}
         />
         <div className="nav-bankroll"><span>训练资金</span><strong>{formatChips(profile.bankroll)}</strong></div>
@@ -632,6 +689,10 @@ function PokerTable({
   onSpeed,
   onSoundMuted,
   onSoundVolume,
+  bgmMuted,
+  bgmVolume,
+  onBgmMuted,
+  onBgmVolume,
 }: {
   table: FullGameState;
   mode: GameMode;
@@ -653,6 +714,10 @@ function PokerTable({
   onSpeed: () => void;
   onSoundMuted: (muted: boolean) => void;
   onSoundVolume: (volume: number) => void;
+  bgmMuted: boolean;
+  bgmVolume: number;
+  onBgmMuted: (muted: boolean) => void;
+  onBgmVolume: (volume: number) => void;
 }) {
   const [tab, setTab] = useState<PanelTab>("coach");
   const heroIndex = table.seats.findIndex((seat) => seat.isHuman);
@@ -704,7 +769,16 @@ function PokerTable({
         </div>
         <div className="table-top-actions"><button onClick={onSpeed}>AI {speed === "fast" ? "快速" : "正常"}</button><span>钱包 <b>{formatChips(bankroll)}</b></span><button disabled={table.status !== "complete"} onClick={onLeave}>{tournamentSelected ? "退出锦标赛" : "离桌"}</button></div>
       </header>
-      <SoundControl muted={soundMuted} volume={soundVolume} onMuted={onSoundMuted} onVolume={onSoundVolume} />
+      <AudioControls
+        soundMuted={soundMuted}
+        soundVolume={soundVolume}
+        onSoundMuted={onSoundMuted}
+        onSoundVolume={onSoundVolume}
+        bgmMuted={bgmMuted}
+        bgmVolume={bgmVolume}
+        onBgmMuted={onBgmMuted}
+        onBgmVolume={onBgmVolume}
+      />
       <div className="table-layout">
         <section className="arena-wrap">
           <div className="felt-table">
@@ -827,6 +901,30 @@ function TournamentResultScreen({
   );
 }
 export default function PokerTrainer() {
+  const [appMode, setAppMode] = useState<"singleplayer" | "multiplayer">("singleplayer");
+  const [initialRoomCode, setInitialRoomCode] = useState("");
+  const [playerName, setPlayerName] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("riverlab_mp_name") || `玩家${Math.floor(100 + Math.random() * 900)}`;
+    }
+    return "玩家";
+  });
+  const playerNameRef = useRef(playerName);
+  useEffect(() => {
+    playerNameRef.current = playerName;
+  }, [playerName]);
+
+  const [wsConnected, setWsConnected] = useState(false);
+  const [lanIps, setLanIps] = useState<string[]>([]);
+  const [serverPort, setServerPort] = useState(4311);
+  const [roomList, setRoomList] = useState<RoomSummary[]>([]);
+  const [mpState, setMpState] = useState<MultiplayerTableState | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  const soundMpHand = useRef(0);
+  const soundMpActions = useRef(0);
+  const soundMpTurn = useRef("");
+
   const [screen, setScreen] = useState<Screen>("lobby");
   const [profile, setProfile] = useState<CareerProfile>(() => createDefaultProfile());
   const [table, setTable] = useState<FullGameState | null>(null);
@@ -842,6 +940,136 @@ export default function PokerTrainer() {
   const soundedActions = useRef(0);
   const soundedResult = useRef("");
   const soundedTurn = useRef("");
+
+  // URL auto-detect for ?room=XXXX
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const roomParam = params.get("room");
+      if (roomParam) {
+        setAppMode("multiplayer");
+        setInitialRoomCode(roomParam.trim().toUpperCase());
+      }
+    }
+  }, []);
+
+  // Multiplayer WebSocket connection
+  useEffect(() => {
+    if (appMode !== "multiplayer") return;
+
+    let socket: WebSocket | null = null;
+    let reconnectTimer: NodeJS.Timeout | null = null;
+
+    const connect = () => {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const host = window.location.host || "localhost:4311";
+      socket = new WebSocket(`${protocol}//${host}/ws`);
+      wsRef.current = socket;
+
+      socket.onopen = () => {
+        setWsConnected(true);
+        socket?.send(JSON.stringify({ type: "SET_NAME", name: playerNameRef.current }));
+        socket?.send(JSON.stringify({ type: "LIST_ROOMS" }));
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const msg: ServerMessage = JSON.parse(event.data);
+          if (msg.type === "INIT") {
+            setLanIps(msg.lanIps);
+            setServerPort(msg.port);
+          } else if (msg.type === "ROOM_LIST") {
+            setRoomList(msg.rooms);
+          } else if (msg.type === "ROOM_STATE") {
+            setMpState(msg.state);
+          } else if (msg.type === "ROOM_LEFT") {
+            setMpState(null);
+          } else if (msg.type === "ERROR") {
+            window.alert(msg.message);
+          }
+        } catch {
+          // ignore
+        }
+      };
+
+      socket.onclose = () => {
+        setWsConnected(false);
+        reconnectTimer = setTimeout(connect, 2500);
+      };
+
+      socket.onerror = () => {
+        socket?.close();
+      };
+    };
+
+    connect();
+
+    return () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      socket?.close();
+      wsRef.current = null;
+    };
+  }, [appMode]);
+
+  // Multiplayer sound effects synchronization
+  useEffect(() => {
+    if (!mpState || mpState.status !== "playing") return;
+    const volume = profile.preferences.soundMuted ? 0 : profile.preferences.soundVolume;
+
+    // Hand deal
+    if (soundMpHand.current !== mpState.handNumber) {
+      soundMpHand.current = mpState.handNumber;
+      soundMpActions.current = mpState.actionLog.length;
+      soundMpTurn.current = "";
+      playPokerSound("deal", volume);
+      return;
+    }
+
+    // Action sounds
+    if (mpState.actionLog.length > soundMpActions.current) {
+      const newActions = mpState.actionLog.slice(soundMpActions.current);
+      soundMpActions.current = mpState.actionLog.length;
+      for (const a of newActions) {
+        if (a.type === "fold") playPokerSound("fold", volume);
+        else if (a.type === "check") playPokerSound("check", volume);
+        else if (a.type === "all-in") playPokerSound("all-in", volume);
+        else playPokerSound("chips", volume);
+      }
+    }
+
+    // Hero turn alert
+    if (mpState.activeIndex >= 0 && mpState.seats[mpState.activeIndex]?.id === mpState.myId) {
+      const turnKey = `${mpState.handNumber}:${mpState.actionLog.length}`;
+      if (soundMpTurn.current !== turnKey) {
+        soundMpTurn.current = turnKey;
+        playPokerSound("turn", volume);
+      }
+    }
+  }, [
+    mpState?.handNumber,
+    mpState?.actionLog.length,
+    mpState?.activeIndex,
+    mpState?.status,
+    profile.preferences.soundMuted,
+    profile.preferences.soundVolume,
+  ]);
+
+  const sendMp = useCallback((msg: ClientMessage) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(msg));
+    }
+  }, []);
+
+  const handleSetPlayerName = (name: string) => {
+    const trimmed = name.trim().slice(0, 16);
+    if (!trimmed) return;
+    setPlayerName(trimmed);
+    playerNameRef.current = trimmed;
+    if (typeof window !== "undefined") {
+      localStorage.setItem("riverlab_mp_name", trimmed);
+    }
+    sendMp({ type: "SET_NAME", name: trimmed });
+  };
 
   useEffect(() => setProfile(loadProfile()), []);
 
@@ -1099,9 +1327,125 @@ export default function PokerTrainer() {
     });
   };
 
+  const setBgmMuted = (bgmMuted: boolean) => {
+    void unlockPokerAudio();
+    void bgm.unlock();
+    bgm.setMuted(bgmMuted);
+    commitProfile({ ...profile, preferences: { ...profile.preferences, bgmMuted } });
+  };
+
+  const setBgmVolume = (bgmVolume: number) => {
+    void unlockPokerAudio();
+    void bgm.unlock();
+    bgm.setVolume(bgmVolume);
+    commitProfile({
+      ...profile,
+      preferences: { ...profile.preferences, bgmVolume, bgmMuted: bgmVolume === 0 },
+    });
+  };
+
+  // Sync BGM init and volume
+  useEffect(() => {
+    bgm.init(profile.preferences.bgmVolume, profile.preferences.bgmMuted);
+  }, [profile.preferences.bgmVolume, profile.preferences.bgmMuted]);
+
+  // Global user interaction unlock for browser audio policy
+  useEffect(() => {
+    const handleUnlock = () => {
+      void unlockPokerAudio();
+      void bgm.unlock();
+    };
+    window.addEventListener("pointerdown", handleUnlock, { passive: true });
+    window.addEventListener("keydown", handleUnlock, { passive: true });
+    return () => {
+      window.removeEventListener("pointerdown", handleUnlock);
+      window.removeEventListener("keydown", handleUnlock);
+    };
+  }, []);
+
+  // Adaptive dynamic BGM stage switching with 1s crossfade & timestamp sync
+  const bgmStage = useMemo(() => {
+    if (appMode === "multiplayer") {
+      return getBgmStageFromMultiplayer(mpState);
+    }
+    return getBgmStageFromSinglePlayer(table, screen);
+  }, [appMode, mpState, table, screen]);
+
+  useEffect(() => {
+    bgm.switchStage(bgmStage);
+  }, [bgmStage]);
+
+  if (appMode === "multiplayer") {
+    if (mpState && mpState.status === "playing") {
+      return (
+        <MultiplayerTable
+          state={mpState}
+          soundMuted={profile.preferences.soundMuted}
+          soundVolume={profile.preferences.soundVolume}
+          bgmMuted={profile.preferences.bgmMuted}
+          bgmVolume={profile.preferences.bgmVolume}
+          onSoundMuted={setSoundMuted}
+          onSoundVolume={setSoundVolume}
+          onBgmMuted={setBgmMuted}
+          onBgmVolume={setBgmVolume}
+          onAction={(action) => sendMp({ type: "PLAYER_ACTION", action })}
+          onUseTimeBank={() => sendMp({ type: "USE_TIME_BANK" })}
+          onNextHand={() => sendMp({ type: "NEXT_HAND" })}
+          onRebuy={() => sendMp({ type: "REBUY" })}
+          onToggleGodMode={(enabled) => sendMp({ type: "TOGGLE_GOD_MODE", enabled })}
+          onLeaveRoom={() => sendMp({ type: "LEAVE_ROOM" })}
+        />
+      );
+    }
+
+    return (
+      <div className="mp-root-container">
+        <header className="lobby-nav mp-nav-override">
+          <div className="brand-lockup">
+            <span className="brand-mark">🌐</span>
+            <div><strong>RiverLab</strong><span>局域网多人对战</span></div>
+          </div>
+          <div className="lobby-mode-switch">
+            <button type="button" onClick={() => setAppMode("singleplayer")}>🤖 单机训练</button>
+            <button type="button" className="active">🌐 局域网联机</button>
+          </div>
+          <AudioControls
+            soundMuted={profile.preferences.soundMuted}
+            soundVolume={profile.preferences.soundVolume}
+            onSoundMuted={(soundMuted) => commitProfile({ ...profile, preferences: { ...profile.preferences, soundMuted } })}
+            onSoundVolume={(soundVolume) => commitProfile({ ...profile, preferences: { ...profile.preferences, soundVolume, soundMuted: soundVolume === 0 } })}
+            bgmMuted={profile.preferences.bgmMuted}
+            bgmVolume={profile.preferences.bgmVolume}
+            onBgmMuted={setBgmMuted}
+            onBgmVolume={setBgmVolume}
+          />
+        </header>
+
+        <MultiplayerLobby
+          state={mpState}
+          connected={wsConnected}
+          lanIps={lanIps}
+          port={serverPort}
+          playerName={playerName}
+          roomList={roomList}
+          onSetName={handleSetPlayerName}
+          onCreateRoom={(cfg) => sendMp({ type: "CREATE_ROOM", config: cfg, playerName: playerNameRef.current })}
+          onJoinRoom={(code, asSpec) => sendMp({ type: "JOIN_ROOM", roomCode: code, asSpectator: asSpec, playerName: playerNameRef.current })}
+          onLeaveRoom={() => sendMp({ type: "LEAVE_ROOM" })}
+          onTakeSeat={(index) => sendMp({ type: "TAKE_SEAT", seatIndex: index })}
+          onStandUp={() => sendMp({ type: "STAND_UP" })}
+          onToggleReady={() => sendMp({ type: "TOGGLE_READY" })}
+          onStartGame={() => sendMp({ type: "START_GAME" })}
+          onRefreshRooms={() => sendMp({ type: "LIST_ROOMS" })}
+          initialRoomCode={initialRoomCode}
+        />
+      </div>
+    );
+  }
+
   if (screen === "tournament-result" && tournament?.finished && table && session) {
     return <TournamentResultScreen tournament={tournament} bankroll={profile.bankroll} simulatedShowdowns={simulatedShowdowns} onBack={leaveTable} />;
   }
-  if (screen === "lobby" || !table || !session) return <Lobby profile={profile} onProfile={commitProfile} onStart={startSession} />;
-  return <PokerTable table={table} mode={session.mode} difficulty={session.difficulty} tableFormat={session.tableFormat} tournament={tournament ?? undefined} bankroll={profile.bankroll} speed={profile.preferences.aiSpeed} soundMuted={profile.preferences.soundMuted} soundVolume={profile.preferences.soundVolume} advice={activeAdvice} review={review} onAction={handleHumanAction} onNext={nextHand} onTopUp={topUp} onSkipTournament={skipTournament} isSkippingTournament={isSkippingTournament} onLeave={leaveTable} onSpeed={toggleSpeed} onSoundMuted={setSoundMuted} onSoundVolume={setSoundVolume} />;
+  if (screen === "lobby" || !table || !session) return <Lobby profile={profile} onProfile={commitProfile} onStart={startSession} onSwitchToMultiplayer={() => setAppMode("multiplayer")} />;
+  return <PokerTable table={table} mode={session.mode} difficulty={session.difficulty} tableFormat={session.tableFormat} tournament={tournament ?? undefined} bankroll={profile.bankroll} speed={profile.preferences.aiSpeed} soundMuted={profile.preferences.soundMuted} soundVolume={profile.preferences.soundVolume} bgmMuted={profile.preferences.bgmMuted} bgmVolume={profile.preferences.bgmVolume} advice={activeAdvice} review={review} onAction={handleHumanAction} onNext={nextHand} onTopUp={topUp} onSkipTournament={skipTournament} isSkippingTournament={isSkippingTournament} onLeave={leaveTable} onSpeed={toggleSpeed} onSoundMuted={setSoundMuted} onSoundVolume={setSoundVolume} onBgmMuted={setBgmMuted} onBgmVolume={setBgmVolume} />;
 }

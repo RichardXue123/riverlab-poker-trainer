@@ -1,4 +1,4 @@
-﻿import type { Card, Rank, Suit } from "./types";
+import type { Card, Rank, Suit } from "./types";
 import { SeededRng } from "./rng";
 
 export const SUITS: Suit[] = ["s", "h", "d", "c"];
@@ -20,7 +20,7 @@ export const RANK_SYMBOL: Record<Rank, string> = {
   7: "7",
   8: "8",
   9: "9",
-  10: "T",
+  10: "10",
   11: "J",
   12: "Q",
   13: "K",
