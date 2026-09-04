@@ -8,7 +8,7 @@ import { auditAiReadability } from "../lib/poker/ai-audit";
 import { createDeck, parseCard, shuffledDeck, SUIT_SYMBOL } from "../lib/poker/cards";
 import { buildCoachAdvice } from "../lib/poker/coach";
 import { compareScores, evaluateFive, evaluateSeven } from "../lib/poker/evaluator";
-import { applyAction, buildBotView, buildPlayerView, createTable, getLegalActions, potSize, settleShowdown, startHand } from "../lib/poker/engine";
+import { applyAction, buildBotView, buildPlayerView, createTable, getLegalActions, potSize, settleShowdown, settleUncontested, startHand } from "../lib/poker/engine";
 import { classifyRelativeHand } from "../lib/poker/hand-profile";
 import { buildBotLinePlan } from "../lib/poker/line-planner";
 import { buildBayesianRange } from "../lib/poker/range-model";
@@ -228,6 +228,115 @@ test("side pots pay the short stack main pot and deep stack side pot", () => {
     { playerId: "bot-1", contributed: 100, received: 100, net: 0 },
   ]);
   assert.equal(settled.lastResult?.winnerSettlements.reduce((sum, result) => sum + result.received, 0), 250);
+});
+
+test("playerSettlements accurately computes profit and loss for all hand participants in showdown", () => {
+  const state = createTable({ smallBlind: 5, bigBlind: 10, difficulty: "standard", seats: seats([0, 0, 0, 0]) });
+  state.status = "playing";
+  state.buttonIndex = 0;
+  state.community = cards("Ac Kd 7h 4s 2c");
+  state.seats[0].holeCards = cards("As Ah");
+  state.seats[1].holeCards = cards("Ks Kh");
+  state.seats[2].holeCards = cards("Qs Qh");
+  state.seats[3].holeCards = cards("Js Jh");
+  state.seats[3].folded = true;
+  state.seats[0].committedHand = 50;
+  state.seats[1].committedHand = 100;
+  state.seats[2].committedHand = 100;
+  state.seats[3].committedHand = 20;
+  assert.equal(potSize(state), 270);
+
+  const settled = settleShowdown(structuredClone(state));
+  const ps = settled.lastResult?.playerSettlements;
+  assert.ok(ps, "playerSettlements should exist");
+  assert.equal(ps.length, 4);
+
+  // Winner (Hero) took main pot (50*3 + 20 = 170)
+  const heroSettlement = ps.find((p) => p.playerId === "hero");
+  assert.ok(heroSettlement);
+  assert.equal(heroSettlement.contributed, 50);
+  assert.equal(heroSettlement.received, 170);
+  assert.equal(heroSettlement.net, 120);
+  assert.equal(heroSettlement.isWinner, true);
+  assert.equal(heroSettlement.folded, false);
+
+  // Side pot winner (Bot 1) took side pot (50*2 = 100)
+  const bot1Settlement = ps.find((p) => p.playerId === "bot-1");
+  assert.ok(bot1Settlement);
+  assert.equal(bot1Settlement.contributed, 100);
+  assert.equal(bot1Settlement.received, 100);
+  assert.equal(bot1Settlement.net, 0);
+  assert.equal(bot1Settlement.isWinner, true);
+
+  // Loser (Bot 2) lost 100
+  const bot2Settlement = ps.find((p) => p.playerId === "bot-2");
+  assert.ok(bot2Settlement);
+  assert.equal(bot2Settlement.contributed, 100);
+  assert.equal(bot2Settlement.received, 0);
+  assert.equal(bot2Settlement.net, -100);
+  assert.equal(bot2Settlement.isWinner, false);
+
+  // Folded player (Bot 3) lost 20
+  const bot3Settlement = ps.find((p) => p.playerId === "bot-3");
+  assert.ok(bot3Settlement);
+  assert.equal(bot3Settlement.contributed, 20);
+  assert.equal(bot3Settlement.received, 0);
+  assert.equal(bot3Settlement.net, -20);
+  assert.equal(bot3Settlement.isWinner, false);
+  assert.equal(bot3Settlement.folded, true);
+
+  // Zero-sum chip conservation: 120 + 0 + (-100) + (-20) === 0
+  const totalNet = ps.reduce((sum, p) => sum + p.net, 0);
+  assert.equal(totalNet, 0, "Sum of net profit/loss across all participants must be exactly 0");
+});
+
+test("playerSettlements accurately computes profit and loss in uncontested win (fold victory)", () => {
+  const state = createTable({ smallBlind: 5, bigBlind: 10, difficulty: "standard", seats: seats([500, 500, 500]) });
+  state.status = "playing";
+  state.buttonIndex = 0;
+  state.seats[0].committedHand = 150;
+  state.seats[1].committedHand = 80;
+  state.seats[1].folded = true;
+  state.seats[2].committedHand = 10;
+  state.seats[2].folded = true;
+
+  const totalPot = potSize(state);
+  assert.equal(totalPot, 240);
+
+  const settled = settleUncontested(structuredClone(state), state.seats[0]);
+  const ps = settled.lastResult?.playerSettlements;
+  assert.ok(ps, "playerSettlements should exist");
+  assert.equal(ps.length, 3);
+
+  // Winner (Hero): received 240, contributed 150 -> net +90
+  const heroSettlement = ps.find((p) => p.playerId === "hero");
+  assert.ok(heroSettlement);
+  assert.equal(heroSettlement.contributed, 150);
+  assert.equal(heroSettlement.received, 240);
+  assert.equal(heroSettlement.net, 90);
+  assert.equal(heroSettlement.isWinner, true);
+
+  // Folded Bot 1: contributed 80, received 0 -> net -80
+  const bot1Settlement = ps.find((p) => p.playerId === "bot-1");
+  assert.ok(bot1Settlement);
+  assert.equal(bot1Settlement.contributed, 80);
+  assert.equal(bot1Settlement.received, 0);
+  assert.equal(bot1Settlement.net, -80);
+  assert.equal(bot1Settlement.isWinner, false);
+  assert.equal(bot1Settlement.folded, true);
+
+  // Folded Bot 2: contributed 10, received 0 -> net -10
+  const bot2Settlement = ps.find((p) => p.playerId === "bot-2");
+  assert.ok(bot2Settlement);
+  assert.equal(bot2Settlement.contributed, 10);
+  assert.equal(bot2Settlement.received, 0);
+  assert.equal(bot2Settlement.net, -10);
+  assert.equal(bot2Settlement.isWinner, false);
+  assert.equal(bot2Settlement.folded, true);
+
+  // Zero-sum chip conservation: 90 - 80 - 10 === 0
+  const totalNet = ps.reduce((sum, p) => sum + p.net, 0);
+  assert.equal(totalNet, 0, "Sum of net profit/loss across all participants must be exactly 0");
 });
 
 test("tournament hands keep busted seats out and advance blinds", () => {

@@ -6,6 +6,7 @@ import { RANK_SYMBOL, SUIT_SYMBOL } from "@/lib/poker/cards";
 import { buildCoachAdvice, createHandReview, GLOSSARY, rateDecision } from "@/lib/poker/coach";
 import MultiplayerLobby from "./MultiplayerLobby";
 import MultiplayerTable from "./MultiplayerTable";
+import { PokerTutorial } from "./PokerTutorial";
 import type { ClientMessage, MultiplayerTableState, RoomSummary, ServerMessage } from "@/server/multiplayer-types";
 import {
   ACTION_LABELS,
@@ -60,7 +61,7 @@ import type {
 } from "@/lib/poker/types";
 
 type Screen = "lobby" | "table" | "tournament-result";
-type PanelTab = "coach" | "timeline" | "stats" | "glossary";
+type PanelTab = "coach" | "timeline" | "tutorial" | "stats" | "glossary";
 
 interface ActiveSession {
   mode: GameMode;
@@ -375,8 +376,27 @@ function Seat({
   const eliminated = seat.stack === 0 && (table.status === "complete" || seat.holeCards.length === 0);
   const position = buildPlayerView(table, "hero").seats[index].position;
   const stats = seat.stats;
+  const seatSettlement = table.status === "complete"
+    ? table.lastResult?.playerSettlements?.find((s) => s.playerId === seat.id)
+    : undefined;
   return (
     <div className={`table-seat seat-${index} ${active ? "seat-active" : ""} ${seat.folded ? "seat-folded" : ""} ${eliminated ? "seat-eliminated" : ""}`}>
+      {table.status === "complete" && seatSettlement && (
+        <div
+          className={`seat-settlement-badge ${
+            seatSettlement.net > 0 ? "win" : seatSettlement.net < 0 ? "loss" : "even"
+          }`}
+          title={`投入: ${formatChips(seatSettlement.contributed)} · 获得: ${formatChips(seatSettlement.received)} · 净结果: ${seatSettlement.net > 0 ? "+" : ""}${formatChips(seatSettlement.net)}`}
+        >
+          <span className="settlement-badge-tag">{seatSettlement.net > 0 ? "胜" : seatSettlement.net < 0 ? "亏" : "平"}</span>
+          <span className="settlement-badge-amount">
+            {seatSettlement.net > 0 ? "+" : seatSettlement.net < 0 ? "−" : "±0"}{formatChips(Math.abs(seatSettlement.net))}
+          </span>
+          <small className="settlement-badge-bb">
+            ({seatSettlement.net > 0 ? "+" : seatSettlement.net < 0 ? "−" : ""}{(Math.abs(seatSettlement.net) / table.bigBlind).toFixed(1)}BB)
+          </small>
+        </div>
+      )}
       <div className="seat-cards">
         {seat.holeCards.length > 0 && seat.holeCards.map((card) => <CardFace key={card.id} card={card} hidden={!seat.isHuman && !reveal} small />)}
       </div>
@@ -651,6 +671,7 @@ function SidePanel({
       <div className="panel-tabs">
         <button className={tab === "coach" ? "active" : ""} onClick={() => onTab("coach")}>{mode === "review" && review ? "复盘" : "教练"}</button>
         <button className={tab === "timeline" ? "active" : ""} onClick={() => onTab("timeline")}>行动</button>
+        <button className={tab === "tutorial" ? "active" : ""} onClick={() => onTab("tutorial")}>教程</button>
         <button className={tab === "stats" ? "active" : ""} onClick={() => onTab("stats")}>数据</button>
         <button className={tab === "glossary" ? "active" : ""} onClick={() => onTab("glossary")}>黑话</button>
       </div>
@@ -659,8 +680,49 @@ function SidePanel({
         {tab === "coach" && mode === "review" && !review && <div className="muted-panel"><span>指导模式</span><strong>先打，再看答案</strong><p>教练正在静默记录。整手结束前不会给出任何提示或隐藏信息。</p></div>}
         {tab === "coach" && review && mode !== "battle" && <ReviewPanel review={review} />}
         {tab === "coach" && mode === "teaching" && !review && advice && <CoachCard advice={advice} />}
-        {tab === "coach" && mode === "teaching" && !review && !advice && <div className="muted-panel"><span>第一视角教练</span><strong>观察公开行动中</strong><p>轮到你时，这里会给出推荐线路。教练的数据输入中没有 AI 底牌或未来牌。</p></div>}
-        {tab === "timeline" && <div className="timeline"><h3>行动时间线</h3>{table.actionLog.map((action) => <div key={action.index}><span>{STREET_LABELS[action.street]}</span><b>{action.playerName}</b><em>{ACTION_LABELS[action.type]}{action.amount > 0 ? ` ${formatChips(action.amount)}` : ""}</em></div>)}</div>}
+        {tab === "timeline" && (
+          <div className="timeline">
+            <h3>行动时间线</h3>
+            {table.actionLog.map((action) => (
+              <div key={action.index}>
+                <span>{STREET_LABELS[action.street]}</span>
+                <b>{action.playerName}</b>
+                <em>
+                  <span>{ACTION_LABELS[action.type]}{action.amount > 0 ? ` ${formatChips(action.amount)}` : ""}</span>
+                  {action.thinkingText && (
+                    <span
+                      className={`action-thinking ${action.isDeepThinking ? "deep" : ""}`}
+                      title={action.isDeepThinking ? "思考时间超过单轮时间的一半" : undefined}
+                    >
+                      {action.thinkingText}
+                    </span>
+                  )}
+                </em>
+              </div>
+            ))}
+            {table.status === "complete" && table.lastResult && (
+              <div className="timeline-settlement-card">
+                <div className="timeline-settlement-header">
+                  <strong>🏆 本手结算</strong>
+                  <span>底池 {formatChips(table.lastResult.potTotal)}</span>
+                </div>
+                <p className="timeline-settlement-summary">{table.lastResult.summary}</p>
+                {table.lastResult.playerSettlements && (
+                  <div className="timeline-settlement-list">
+                    {table.lastResult.playerSettlements.map((s) => (
+                      <div key={s.playerId} className={`timeline-settlement-item ${s.net > 0 ? "win" : s.net < 0 ? "loss" : "even"}`}>
+                        <span className="ts-name">{s.playerName}</span>
+                        <span className="ts-net">{s.net > 0 ? "+" : s.net < 0 ? "−" : "±0"}{formatChips(Math.abs(s.net))}</span>
+                        <small className="ts-detail">(投{formatChips(s.contributed)} 拿{formatChips(s.received)})</small>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+        {tab === "tutorial" && <PokerTutorial />}
         {tab === "stats" && <div className="opponent-list"><h3>可观察数据</h3><p>数据来自已经发生的公开行动；样本少时不显示推断标签。</p>{visibleView.seats.filter((seat) => !seat.isHuman).map((seat) => <div className="opponent-row" key={seat.id}><b>{seat.name}</b><span>{seat.position}</span><div><StatPill label="VPIP" value={percent(seat.stats.vpipHands, seat.stats.hands)} /><StatPill label="PFR" value={percent(seat.stats.pfrHands, seat.stats.hands)} /><StatPill label="3BET" value={percent(seat.stats.threeBets, seat.stats.hands)} /><StatPill label="AF" value={percent(seat.stats.aggressiveActions, seat.stats.aggressiveActions + seat.stats.passiveActions)} /></div><small>{seat.stats.hands} hands</small></div>)}</div>}
         {tab === "glossary" && <div className="glossary"><h3>牌桌黑话</h3>{Object.entries(GLOSSARY).map(([term, entry]) => <div key={term}><b>{term}</b><span>{entry.zh}</span><p>{entry.detail}</p></div>)}</div>}
       </div>
@@ -795,7 +857,45 @@ function PokerTable({
                 <div className="hand-result-copy">
                   <span>本手结束</span>
                   <strong>{table.lastResult?.summary}</strong>
-                  {table.lastResult?.winnerSettlements?.length ? (
+                  {table.lastResult?.playerSettlements?.length ? (
+                    <div className="hand-settlement-grid">
+                      <div className="hand-settlement-header-row">
+                        <span>本手各玩家盈亏明细 ({table.lastResult.playerSettlements.length}人参与)</span>
+                        <small>投入 · 获得 · 净结果</small>
+                      </div>
+                      <div className="hand-settlement-cards">
+                        {table.lastResult.playerSettlements.map((p) => {
+                          const isHero = p.playerId === "hero";
+                          const isWin = p.net > 0;
+                          const isLoss = p.net < 0;
+                          const toneClass = isWin ? "win" : isLoss ? "loss" : "even";
+                          return (
+                            <div key={p.playerId} className={`settlement-pill ${toneClass} ${isHero ? "is-hero" : ""}`}>
+                              <div className="settlement-pill-left">
+                                <span className="settlement-pill-tag">
+                                  {isWin ? "赢家" : p.folded ? "弃牌" : "跟注"}
+                                </span>
+                                <span className="settlement-pill-name" title={p.playerName}>
+                                  {p.playerName} {isHero && "(你)"}
+                                </span>
+                              </div>
+                              <div className="settlement-pill-right">
+                                <span className="settlement-pill-amount">
+                                  {isWin ? "+" : isLoss ? "−" : "±0"}{formatChips(Math.abs(p.net))}
+                                </span>
+                                <small className="settlement-pill-bb">
+                                  ({isWin ? "+" : isLoss ? "−" : ""}{(Math.abs(p.net) / table.bigBlind).toFixed(1)}BB)
+                                </small>
+                                <span className="settlement-pill-detail" title={`投入 ${formatChips(p.contributed)} · 获得 ${formatChips(p.received)}`}>
+                                  投{formatChips(p.contributed)}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : table.lastResult?.winnerSettlements?.length ? (
                     <div className="winner-net-list">
                       {table.lastResult.winnerSettlements.map((settlement) => (
                         <div key={settlement.playerId}>
@@ -1394,6 +1494,9 @@ export default function PokerTrainer() {
           onRebuy={() => sendMp({ type: "REBUY" })}
           onToggleGodMode={(enabled) => sendMp({ type: "TOGGLE_GOD_MODE", enabled })}
           onLeaveRoom={() => sendMp({ type: "LEAVE_ROOM" })}
+          onTransferHost={(targetPlayerId) => sendMp({ type: "TRANSFER_HOST", targetPlayerId })}
+          onTakeSeat={(seatIndex) => sendMp({ type: "TAKE_SEAT", seatIndex })}
+          onStandUp={() => sendMp({ type: "STAND_UP" })}
         />
       );
     }
@@ -1437,6 +1540,7 @@ export default function PokerTrainer() {
           onToggleReady={() => sendMp({ type: "TOGGLE_READY" })}
           onStartGame={() => sendMp({ type: "START_GAME" })}
           onRefreshRooms={() => sendMp({ type: "LIST_ROOMS" })}
+          onTransferHost={(targetPlayerId) => sendMp({ type: "TRANSFER_HOST", targetPlayerId })}
           initialRoomCode={initialRoomCode}
         />
       </div>

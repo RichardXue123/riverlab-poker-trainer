@@ -19,6 +19,7 @@ interface MultiplayerLobbyProps {
   onToggleReady: () => void;
   onStartGame: () => void;
   onRefreshRooms: () => void;
+  onTransferHost?: (targetPlayerId: string) => void;
   initialRoomCode?: string;
 }
 
@@ -38,6 +39,7 @@ export default function MultiplayerLobby({
   onToggleReady,
   onStartGame,
   onRefreshRooms,
+  onTransferHost,
   initialRoomCode,
 }: MultiplayerLobbyProps) {
   const [inputCode, setInputCode] = useState(initialRoomCode ?? "");
@@ -227,6 +229,20 @@ export default function MultiplayerLobby({
                     离座观战
                   </button>
                 )}
+                {state.isHost && !seat.isHost && onTransferHost && (
+                  <button
+                    type="button"
+                    className="mp-btn mp-btn-sm mp-btn-transfer"
+                    onClick={() => {
+                      if (window.confirm(`确认将房主身份转让给「${seat.name}」吗？`)) {
+                        onTransferHost(seat.id);
+                      }
+                    }}
+                    title="将房主权限移交给此玩家"
+                  >
+                    👑 转让房主
+                  </button>
+                )}
               </div>
             );
           })}
@@ -270,6 +286,20 @@ export default function MultiplayerLobby({
               {state.spectators.map((s) => (
                 <span key={s.id} className="mp-spectator-tag">
                   {s.name} {s.id === state.myId && "(我)"}
+                  {state.isHost && s.id !== state.myId && onTransferHost && (
+                    <button
+                      type="button"
+                      className="mp-btn-inline-transfer"
+                      onClick={() => {
+                        if (window.confirm(`确认将房主身份转让给旁观者「${s.name}」吗？`)) {
+                          onTransferHost(s.id);
+                        }
+                      }}
+                      title="移交房主给此旁观者"
+                    >
+                      👑 转让
+                    </button>
+                  )}
                 </span>
               ))}
             </div>

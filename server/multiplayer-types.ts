@@ -1,4 +1,4 @@
-import type { Card, GameAction, LegalActions, PlayerActionInput, PublicSeatState, Street } from "../lib/poker/types";
+import type { Card, GameAction, HandResult, LegalActions, PlayerActionInput, PlayerSettlement, PublicSeatState, Street } from "../lib/poker/types";
 
 export interface RoomConfig {
   smallBlind: number;
@@ -33,6 +33,7 @@ export interface GodModeEquityItem {
   playerName: string;
   seatIndex: number;
   equity: number; // 0..1 (e.g. 0.654 -> 65.4%)
+  equityFormatted?: string; // e.g. "65.4%"
   handName: string;
   holeCards: Card[];
   isFolded: boolean;
@@ -80,6 +81,7 @@ export interface MultiplayerTableState {
   canStartGame: boolean;
   cannotStartReason?: string;
   handResultSummary?: string;
+  lastResult?: HandResult;
   firstHandPending?: boolean;
 }
 
@@ -107,7 +109,8 @@ export type ClientMessage =
   | { type: "USE_TIME_BANK" }
   | { type: "NEXT_HAND" }
   | { type: "REBUY"; amount?: number }
-  | { type: "TOGGLE_GOD_MODE"; enabled: boolean };
+  | { type: "TOGGLE_GOD_MODE"; enabled: boolean }
+  | { type: "TRANSFER_HOST"; targetPlayerId: string };
 
 export type ServerMessage =
   | { type: "PONG" }

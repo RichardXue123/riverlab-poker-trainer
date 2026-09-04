@@ -42,16 +42,16 @@ riverlab-poker-trainer/
 │   └── multiplayer-equity.ts      # 上帝视角/旁观者实时胜率计算器
 ├── public/
 │   ├── music/                     # 5 首严格对齐的交互式分轨音乐（.flac）
-│   │   ├── lobby.flac             # 准备阶段 / 房主待发牌
-│   │   ├── pre-river.flac         # 翻前、翻牌、转牌对决
-│   │   ├── river.flac             # 第 5 张河牌落桌
-│   │   ├── time-bank.flac         # 延时卡生效中的紧迫旋律
-│   │   └── settlement.flac        # 亮牌结算与底池分配
+│   │   ├── Ready Theme.flac       # 准备阶段 / 选模式 / 进房 / 房主待开局 (Ready)
+│   │   ├── Main Theme.flac        # 牌局主题曲：翻前、翻牌、转牌对决 (Main)
+│   │   ├── AllShown Theme.flac    # 五张河牌全部展示阶段 (AllShown)
+│   │   ├── TimeBank Theme.flac    # 延时卡生效中的紧迫旋律 (TimeBank)
+│   │   └── Settlement Theme.flac  # 亮牌结算与底池分配 (Settlement)
 │   └── sounds/                    # 筹码滑动、发牌等高保真音效
-├── tests/                         # 41 项完备的单元与集成自动化测试
+├── tests/                         # 50 项完备的单元与集成自动化测试
 │   ├── bgm-stage.test.ts          # BGM 阶段流转与状态映射测试
 │   ├── multiplayer-room.test.ts   # 联机房间发牌、房主控制、加时卡、防作弊测试
-│   └── *.test.ts                  # 牌型大小、旁注分池、AI 演化测试
+│   └── *.test.ts                  # 牌型大小、旁注分池、全员结算盈亏与零和守恒、AI 演化测试
 ├── vite.config.ts                 # Vite 配置文件，挂载 WebSocket 插件与网络安全配置
 └── package.json                   # 项目依赖与启动脚本
 ```
@@ -66,9 +66,15 @@ riverlab-poker-trainer/
   - 5 首歌曲是 BPM、小节数和总时长 100% 严格一致的分轨。
   - 用户在页面发生**任何首次手势（点击/按键）**触发 `bgm.unlock()` 后，**5 首歌曲在后台主时钟同轴静音并跑**。
   - 当前激活的轨道音量为 `masterVolume`（如 0.35），其余 4 轨以 `0` 音量在后台同走进度。
-- **纯音量推子淡入淡出（1s Crossfade）**：
-  - 阶段切换（如河牌圈、加时卡）时，**严禁调用 `currentTime` 进行任何寻轨（Seek）或 `pause/play`**。
-  - 仅使用 `requestAnimationFrame` 在 1000ms 内平滑推拉各轨音量推子（Gain Faders），实现 100% 绝对采样级（Sample-Accurate）无缝咬合，绝不卡顿或丢节拍。
+- **纯音量推子淡入淡出（2s Crossfade）**：
+  - 阶段切换（如河牌全展示、加时卡）时，**严禁调用 `currentTime` 进行任何寻轨（Seek）或 `pause/play`**。
+  - 仅使用 `requestAnimationFrame` 在 2000ms (2s) 内平滑推拉各轨音量推子（Gain Faders），实现 100% 绝对采样级（Sample-Accurate）无缝咬合，绝不卡顿或丢节拍。
+- **阶段触发时机（Stage Mapping）**：
+  - **Ready Theme**：准备阶段（玩家在选择模式、进入房间/大厅的阶段，以及玩家进入牌桌但房主尚未开局时播放）。
+  - **Main Theme**：房主开始新的一局牌局，切换到主题音乐 Main Theme（涵盖翻前、翻牌、转牌对决）。
+  - **AllShown Theme**：牌局进行到五张河牌全部被展示（River）的时候切换。
+  - **Settlement Theme**：牌局结束时结算阶段播放。
+  - **TimeBank Theme**：有人使用加时卡时播放。
 - **漂移看门狗（Drift Watchdog）**：
   - 每 2 秒静默比对静音后台轨与当前主声轨的时间差。
   - 若累积时钟漂移 >50ms，在静音状态下微调对齐，绝不影响正在收听的主声道。
@@ -94,6 +100,26 @@ riverlab-poker-trainer/
   - 前端以 100ms 定时器计算 `remainingSeconds = Math.ceil((turnExpiresAt - Date.now()) / 1000)`。
   - 操作台顶部内置 `.dock-timer-track` 进度条，根据 `remainingMs / totalMs` 从 100% 匀速缩减至 0%。
   - 当 `remainingSeconds <= 5` 时，进度条与字体自动切换为红色发光脉冲急迫特效。
+
+### 3.4 每局结算全员盈亏与零和守恒计算 (Player Settlement & PnL)
+
+- **严格零和计算 (`lib/poker/engine.ts`)**：
+  - 每局结算（无论是亮牌摊牌 `settleShowdown` 还是无人跟注弃牌获胜 `settleUncontested`），在重置各玩家手牌累计下注额 `committedHand` 前，必须精确抓取所有参局者的真实投入 `contributed`、所获分池 `received` 以及净盈亏 `net = received - contributed`。
+  - 数学绝对守恒：全桌参局玩家 `sum(net)` 恒等于 0（无抽水零和）。
+- **三层递进式可视化展示**：
+  1. **座位悬浮盈亏徽章 (`.seat-settlement-badge`)**：在结算状态下，所有参与当手牌局的玩家座位右上角弹出微动效徽章（赢家绿色 `+金额 (BB)`，输家红色 `-金额 (BB)`，平手灰色 `±0`）。
+  2. **操作台全员盈亏卡片栏 (`.hand-settlement-grid` / `.settlement-pill`)**：操作台在展示手牌结果时，并列渲染所有参战玩家的盈亏卡片，标明 `+ / -`、大盲倍数与气泡详情（`投入 / 获得 / 净结果`）。
+  3. **历史时间轴结算简报 (`.timeline-settlement-card`)**：侧边栏历史战报中每一手牌的结算节点均记录完整的胜负盈亏列表，支持回顾。
+
+### 3.5 玩家行动思考时间与深度思考标记 (Action Thinking Time & Deep Thinking)
+
+- **思考时间采样与权威计算 (`server/multiplayer-room.ts` & `lib/poker/engine.ts`)**：
+  - 服务端在每个玩家回合开始（`startTurnTimer`）时权威记录起始毫秒时间戳 `turnStartedAt = Date.now()`。
+  - 玩家提交动作（`handleAction`）或思考超时（`handleTimeout`）时，计算实际耗时秒数并四舍五入取整：`thinkingSeconds = Math.max(1, Math.round(elapsedMs / 1000))`。
+  - 判定阈值：若 `thinkingSeconds > config.regularTurnSeconds / 2`（思考时间严格超过单轮单步时限的一半），标记为深度思考 `isDeepThinking: true`，格式化文本为 `已深度思考${s}s`；否则格式化为 `已思考${s}s`。
+- **全链路同步与多端展示**：
+  - **历史时间轴 (`.timeline`)**：右侧行动记录栏中，每个玩家的行动项均附带思考时间徽章（常规思考为微透灰底，深度思考为醒目金黄色脉冲光效徽章）。
+  - **座位动作徽章 (`.seat-action`)**：牌桌玩家座位右上方动作标签（如 `跟注 · 已思考5s` 或 `弃牌 · 已深度思考20s`）同步显示思考时长，并在深度思考时赋予琥珀金边框高亮。
 
 ---
 

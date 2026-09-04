@@ -1,18 +1,18 @@
 import type { FullGameState } from "./types";
 import type { MultiplayerTableState } from "@/server/multiplayer-types";
 
-export type BgmStage = "lobby" | "pre-river" | "river" | "time-bank" | "settlement";
+export type BgmStage = "ready" | "main" | "allshown" | "settlement" | "timebank";
 
 const BGM_PATHS: Record<BgmStage, string> = {
-  lobby: "/music/lobby.flac",
-  "pre-river": "/music/pre-river.flac",
-  river: "/music/river.flac",
-  "time-bank": "/music/time-bank.flac",
-  settlement: "/music/settlement.flac",
+  ready: encodeURI("/music/Ready Theme.flac"),
+  main: encodeURI("/music/Main Theme.flac"),
+  allshown: encodeURI("/music/AllShown Theme.flac"),
+  settlement: encodeURI("/music/Settlement Theme.flac"),
+  timebank: encodeURI("/music/TimeBank Theme.flac"),
 };
 
-const ALL_STAGES: BgmStage[] = ["lobby", "pre-river", "river", "time-bank", "settlement"];
-const CROSSFADE_MS = 1000;
+const ALL_STAGES: BgmStage[] = ["ready", "main", "allshown", "settlement", "timebank"];
+const CROSSFADE_MS = 2000;
 
 /**
  * Interactive Stem Music Mixer (游戏工业级同轴多轨混音器)
@@ -21,11 +21,11 @@ const CROSSFADE_MS = 1000;
  * 5 首分轨（Stems）长度、小节、BPM 完全一致。
  * 在开局后，5 首音乐在后台同一时间轴「完全同步、全量静音同跑」。
  * 切换阶段时：绝不执行任何 currentTime 寻轨（No Seek），
- * 仅以 1 秒平滑推拉各轨音量推子（Gain Faders），实现真正 100% 采样级无缝咬合（Sample-Accurate Seamless Mixing）！
+ * 仅以 2 秒平滑推拉各轨音量推子（Gain Faders），实现真正 100% 采样级无缝咬合（Sample-Accurate Seamless Mixing）！
  */
 class BgmController {
   private audios: Partial<Record<BgmStage, HTMLAudioElement>> = {};
-  private currentStage: BgmStage = "lobby";
+  private currentStage: BgmStage = "ready";
   private masterVolume = 0.35;
   private muted = false;
   private unlocked = false;
@@ -50,9 +50,8 @@ class BgmController {
       if (!this.audios[stage]) {
         const audio = new Audio(BGM_PATHS[stage]);
         audio.loop = true;
-        audio.preload = "auto";
+        audio.preload = "none";
         audio.volume = 0;
-        audio.load();
         this.audios[stage] = audio;
       }
     }
@@ -63,9 +62,8 @@ class BgmController {
     if (!this.audios[stage]) {
       const audio = new Audio(BGM_PATHS[stage]);
       audio.loop = true;
-      audio.preload = "auto";
+      audio.preload = "none";
       audio.volume = 0;
-      audio.load();
       this.audios[stage] = audio;
     }
     return this.audios[stage] ?? null;
@@ -81,6 +79,9 @@ class BgmController {
   public async unlock(): Promise<void> {
     if (typeof window === "undefined") return;
     this.unlocked = true;
+    if (this.muted || this.masterVolume === 0) {
+      return;
+    }
     this.preloadAll();
 
     const targetVol = this.getEffectiveTargetVolume();
@@ -168,11 +169,17 @@ class BgmController {
 
   public setVolume(volume: number): void {
     this.masterVolume = Math.max(0, Math.min(1, volume));
+    if (this.unlocked && !this.muted && this.masterVolume > 0) {
+      void this.unlock();
+    }
     this.applyCurrentVolume();
   }
 
   public setMuted(muted: boolean): void {
     this.muted = muted;
+    if (!muted && this.unlocked && this.masterVolume > 0) {
+      void this.unlock();
+    }
     this.applyCurrentVolume();
   }
 
@@ -212,7 +219,7 @@ class BgmController {
 
     // 确保所有分轨均处于播放状态
     if (this.unlocked) {
-      const activeAudio = this.audios[nextStage] || this.audios["lobby"];
+      const activeAudio = this.audios[nextStage] || this.audios["ready"];
       const refTime = activeAudio && !isNaN(activeAudio.currentTime) ? activeAudio.currentTime : 0;
 
       for (const stage of ALL_STAGES) {
@@ -248,7 +255,7 @@ class BgmController {
       startVolumes.push({ audio: a, from: a.volume, to: target });
     }
 
-    // 1000ms (1秒) 高精度音频推子平滑过渡
+    // 2000ms (2秒) 高精度音频推子平滑过渡
     const startTime = performance.now();
 
     const tick = (now: number) => {
@@ -283,10 +290,17 @@ export const bgm = new BgmController();
 
 /**
  * 权威多人对局 BGM 状态解析器
+ *
+ * 阶段规则：
+ * 1. 准备阶段：玩家在选择模式、进入房间/大厅、以及进入牌桌但房主尚未开启第一手牌时，播放 Ready Theme。
+ * 2. 结算阶段：本手分池、亮牌展示或已产生胜者结果时，播放 Settlement Theme。
+ * 3. 加时卡阶段：有人使用加时卡时，播放 TimeBank Theme。
+ * 4. 河牌展示：牌局进行到五张河牌全部被展示（community >= 5 或 street 为 river）时，切换到 AllShown Theme。
+ * 5. 主题音乐：房主开启新的一局牌局（翻前、翻牌、转牌），切换到 Main Theme。
  */
 export function getBgmStageFromMultiplayer(state: MultiplayerTableState | null): BgmStage {
   if (!state || state.status === "lobby" || state.firstHandPending || state.handNumber === 0) {
-    return "lobby";
+    return "ready";
   }
 
   // 结算阶段：本手分池、亮牌展示或已产生胜者结果
@@ -294,18 +308,18 @@ export function getBgmStageFromMultiplayer(state: MultiplayerTableState | null):
     return "settlement";
   }
 
-  // 加时卡阶段：剩余 ≤5s 激活 1 倍常规单次思考时间
+  // 加时卡阶段：有人使用加时卡
   if (state.timeBankActive) {
-    return "time-bank";
+    return "timebank";
   }
 
-  // 河牌阶段：第 5 张公共牌已落桌
-  if (state.street === "river") {
-    return "river";
+  // 河牌阶段：五张河牌全部被展示
+  if (state.community.length >= 5 || state.street === "river") {
+    return "allshown";
   }
 
-  // 河牌前阶段：翻前、翻牌、转牌各圈对决
-  return "pre-river";
+  // 主题音乐：房主开启新局，翻前、翻牌、转牌对决各圈
+  return "main";
 }
 
 /**
@@ -316,16 +330,16 @@ export function getBgmStageFromSinglePlayer(
   screen: string,
 ): BgmStage {
   if (!table || screen === "lobby" || screen === "tournament-result") {
-    return "lobby";
+    return "ready";
   }
 
-  if (table.status === "complete") {
+  if (table.status === "complete" || table.street === "complete") {
     return "settlement";
   }
 
-  if (table.street === "river") {
-    return "river";
+  if (table.community.length >= 5 || table.street === "river") {
+    return "allshown";
   }
 
-  return "pre-river";
+  return "main";
 }

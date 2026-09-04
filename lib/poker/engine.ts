@@ -9,6 +9,7 @@ import type {
   LegalActions,
   LoggedActionType,
   PlayerActionInput,
+  PlayerSettlement,
   PlayerViewState,
   PublicSeatState,
   ReviewSnapshot,
@@ -43,8 +44,9 @@ function cloneState(state: FullGameState): FullGameState {
 }
 
 function occupied(state: FullGameState, index: number): boolean {
+  if (index < 0 || index >= state.seats.length) return false;
   const seat = state.seats[index];
-  return seat.stack > 0 || seat.committedHand > 0;
+  return Boolean(seat && (seat.stack > 0 || seat.committedHand > 0));
 }
 
 function nextIndex(state: FullGameState, from: number, predicate: (seat: SeatState) => boolean): number {
@@ -106,6 +108,7 @@ function recordAction(
   amount: number,
   potBefore: number,
   trace?: DecisionTrace,
+  thinkingMeta?: { thinkingSeconds?: number; thinkingText?: string; isDeepThinking?: boolean },
 ): void {
   const action: GameAction = {
     index: state.actionLog.length,
@@ -117,10 +120,15 @@ function recordAction(
     street: state.street,
     potBefore,
     timestamp: Date.now(),
+    thinkingSeconds: thinkingMeta?.thinkingSeconds,
+    thinkingText: thinkingMeta?.thinkingText,
+    isDeepThinking: thinkingMeta?.isDeepThinking,
     decisionTrace: trace,
   };
   state.actionLog.push(action);
   seat.lastAction = type;
+  seat.lastActionThinkingSeconds = thinkingMeta?.thinkingSeconds;
+  seat.lastActionThinkingText = thinkingMeta?.thinkingText;
 }
 
 function contribute(state: FullGameState, seat: SeatState, requested: number): number {
@@ -193,10 +201,15 @@ export function startHand(previous: FullGameState, seed: string, options: StartH
 }
 
 export function getPosition(state: FullGameState, seatIndex: number): string {
+  if (state.buttonIndex < 0 || state.buttonIndex >= state.seats.length || !state.seats[state.buttonIndex]) {
+    return `座位${seatIndex + 1}`;
+  }
   const activeIndexes: number[] = [];
   let cursor = state.buttonIndex;
   for (let count = 0; count < state.seats.length; count += 1) {
-    if (occupied(state, cursor) || state.seats[cursor].holeCards.length > 0) activeIndexes.push(cursor);
+    if (occupied(state, cursor) || (state.seats[cursor] && state.seats[cursor].holeCards.length > 0)) {
+      activeIndexes.push(cursor);
+    }
     cursor = (cursor + 1) % state.seats.length;
   }
   const position = activeIndexes.indexOf(seatIndex);
@@ -295,6 +308,23 @@ export function settleShowdown(state: FullGameState): FullGameState {
   }
 
   const names = [...allWinners].map((id) => state.seats.find((seat) => seat.id === id)?.name).filter(Boolean).join("、");
+  const playerSettlements: PlayerSettlement[] = state.seats
+    .filter((seat) => (contributions.get(seat.id) ?? 0) > 0 || (payouts.get(seat.id) ?? 0) > 0 || seat.holeCards.length > 0)
+    .map((seat) => {
+      const received = payouts.get(seat.id) ?? 0;
+      const contributed = contributions.get(seat.id) ?? 0;
+      return {
+        playerId: seat.id,
+        playerName: seat.name,
+        contributed,
+        received,
+        net: received - contributed,
+        isWinner: allWinners.has(seat.id),
+        folded: seat.folded,
+      };
+    })
+    .sort((a, b) => b.net - a.net || b.received - a.received);
+
   state.lastResult = {
     potTotal: total,
     awards,
@@ -305,6 +335,7 @@ export function settleShowdown(state: FullGameState): FullGameState {
       const contributed = contributions.get(id) ?? 0;
       return { playerId: id, playerName: seat.name, contributed, received, net: received - contributed };
     }),
+    playerSettlements,
     summary: `${names} 在摊牌赢得 ${total} 筹码`,
     showdown: true,
   };
@@ -318,10 +349,28 @@ export function settleShowdown(state: FullGameState): FullGameState {
   return state;
 }
 
-function settleUncontested(state: FullGameState, winner: SeatState): FullGameState {
+export function settleUncontested(state: FullGameState, winner: SeatState): FullGameState {
   const total = potSize(state);
+  const contributions = new Map(state.seats.map((seat) => [seat.id, seat.committedHand]));
   const contributed = winner.committedHand;
   winner.stack += total;
+  const playerSettlements: PlayerSettlement[] = state.seats
+    .filter((seat) => (contributions.get(seat.id) ?? 0) > 0 || seat.id === winner.id || seat.holeCards.length > 0)
+    .map((seat) => {
+      const received = seat.id === winner.id ? total : 0;
+      const cont = contributions.get(seat.id) ?? 0;
+      return {
+        playerId: seat.id,
+        playerName: seat.name,
+        contributed: cont,
+        received,
+        net: received - cont,
+        isWinner: seat.id === winner.id,
+        folded: seat.folded,
+      };
+    })
+    .sort((a, b) => b.net - a.net || b.received - a.received);
+
   state.lastResult = {
     potTotal: total,
     awards: [{ amount: total, winnerIds: [winner.id], label: "底池" }],
@@ -333,6 +382,7 @@ function settleUncontested(state: FullGameState, winner: SeatState): FullGameSta
       received: total,
       net: total - contributed,
     }],
+    playerSettlements,
     summary: `${winner.name} 无需摊牌赢得 ${total} 筹码`,
     showdown: false,
   };
@@ -362,7 +412,11 @@ function advanceAfterRound(state: FullGameState): FullGameState {
     seat.committedStreet = 0;
     seat.acted = false;
     seat.raiseLocked = false;
-    seat.lastAction = undefined;
+    if (!seat.folded) {
+      seat.lastAction = undefined;
+      seat.lastActionThinkingSeconds = undefined;
+      seat.lastActionThinkingText = undefined;
+    }
   }
   state.currentBet = 0;
   state.minRaise = state.bigBlind;
@@ -374,7 +428,12 @@ function advanceAfterRound(state: FullGameState): FullGameState {
   return state;
 }
 
-export function applyAction(stateInput: FullGameState, input: PlayerActionInput, trace?: DecisionTrace): FullGameState {
+export function applyAction(
+  stateInput: FullGameState,
+  input: PlayerActionInput,
+  trace?: DecisionTrace,
+  thinkingMeta?: { thinkingSeconds?: number; thinkingText?: string; isDeepThinking?: boolean },
+): FullGameState {
   const state = cloneState(stateInput);
   if (state.status !== "playing" || state.activeIndex < 0) throw new Error("No active betting decision");
   const seat = state.seats[state.activeIndex];
@@ -384,7 +443,6 @@ export function applyAction(stateInput: FullGameState, input: PlayerActionInput,
   let amount = 0;
 
   if (input.type === "fold") {
-    if (!legal.canFold) throw new Error("Fold is not legal when checking is available");
     seat.folded = true;
   } else if (input.type === "check") {
     if (!legal.canCheck) throw new Error("Cannot check facing a bet");
@@ -423,7 +481,7 @@ export function applyAction(stateInput: FullGameState, input: PlayerActionInput,
 
   seat.acted = true;
   const loggedType: LoggedActionType = input.type === "all-in" ? "all-in" : input.type;
-  recordAction(state, seat, loggedType, amount, before, trace);
+  recordAction(state, seat, loggedType, amount, before, trace, thinkingMeta);
 
   const remaining = remainingPlayers(state);
   if (remaining.length === 1) return settleUncontested(state, remaining[0]);
@@ -444,6 +502,8 @@ function publicSeat(state: FullGameState, seat: SeatState, index: number): Publi
     committedStreet: seat.committedStreet,
     committedHand: seat.committedHand,
     lastAction: seat.lastAction,
+    lastActionThinkingSeconds: seat.lastActionThinkingSeconds,
+    lastActionThinkingText: seat.lastActionThinkingText,
     position: getPosition(state, index),
     stats: structuredClone(seat.stats),
   };

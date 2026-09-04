@@ -2,7 +2,9 @@ import {
   applyAction,
   createTable,
   getLegalActions,
+  getPosition,
   potSize,
+  settleUncontested,
   startHand,
 } from "../lib/poker/engine";
 import { makeSeed } from "../lib/poker/rng";
@@ -30,11 +32,19 @@ export class MultiplayerRoom {
   public timeBankActive = false;
   public firstHandPending = false;
 
+  public turnStartedAt = 0;
   private turnTimer: NodeJS.Timeout | null = null;
   private turnExpiresAt = 0;
   private turnTotalTime = 20;
   private autoNextHandTimer: NodeJS.Timeout | null = null;
   private onStateChange: () => void;
+
+  public formatThinking(seconds: number): { thinkingSeconds: number; thinkingText: string; isDeepThinking: boolean } {
+    const sec = Math.max(1, Math.round(seconds));
+    const isDeep = sec > this.config.regularTurnSeconds / 2;
+    const thinkingText = isDeep ? `已深度思考${sec}s` : `已思考${sec}s`;
+    return { thinkingSeconds: sec, thinkingText, isDeepThinking: isDeep };
+  }
 
   constructor(code: string, hostId: string, hostName: string, onStateChange: () => void, config?: Partial<RoomConfig>) {
     this.code = code;
@@ -143,10 +153,17 @@ export class MultiplayerRoom {
       if (this.gameState && this.gameState.status === "playing") {
         const gameSeat = this.gameState.seats.find((s) => s.id === clientId);
         if (gameSeat && !gameSeat.folded) {
-          gameSeat.folded = true;
-          // If it was this player's turn, advance
+          // If it was this player's turn, advance by triggering timeout / auto-fold
           if (this.gameState.activeIndex === this.gameState.seats.indexOf(gameSeat)) {
             this.handleTimeout();
+          } else {
+            gameSeat.folded = true;
+            const activeRemaining = this.gameState.seats.filter((s) => !s.folded);
+            if (activeRemaining.length === 1) {
+              this.gameState = settleUncontested(this.gameState, activeRemaining[0]);
+              this.syncPlayerStacks();
+              this.checkHandCompletion();
+            }
           }
         }
       }
@@ -163,12 +180,26 @@ export class MultiplayerRoom {
       return true;
     }
 
-    // Transfer host if host left
+    // Transfer host if host left (clockwise to next seated player, or first spectator)
     if (wasHost) {
-      if (remainingSeated.length > 0) {
-        remainingSeated[0].isHost = true;
-        remainingSeated[0].isReady = true;
-        this.hostId = remainingSeated[0].id;
+      let nextHostSeat: RoomSeatPlayer | null = null;
+      if (seatIndex !== -1) {
+        for (let offset = 1; offset < 8; offset += 1) {
+          const checkIndex = (seatIndex + offset) % 8;
+          const candidate = this.seats[checkIndex];
+          if (candidate) {
+            nextHostSeat = candidate;
+            break;
+          }
+        }
+      } else if (remainingSeated.length > 0) {
+        nextHostSeat = remainingSeated[0];
+      }
+
+      if (nextHostSeat) {
+        nextHostSeat.isHost = true;
+        nextHostSeat.isReady = true;
+        this.hostId = nextHostSeat.id;
       } else if (remainingSpectators.length > 0) {
         this.hostId = remainingSpectators[0].id;
       }
@@ -178,8 +209,45 @@ export class MultiplayerRoom {
     return false;
   }
 
+  public transferHost(currentHostId: string, targetId: string): { success: boolean; error?: string } {
+    if (this.hostId !== currentHostId) {
+      return { success: false, error: "只有房主才能转让房主身份" };
+    }
+    if (targetId === currentHostId) {
+      return { success: false, error: "您已经是房主" };
+    }
+
+    const targetSeat = this.seats.find((s) => s?.id === targetId);
+    const targetSpectator = this.spectators.get(targetId);
+    if (!targetSeat && !targetSpectator) {
+      return { success: false, error: "目标玩家不在房间内" };
+    }
+
+    // Reset old host flag and set target host flag
+    for (const seat of this.seats) {
+      if (seat) {
+        if (seat.id === currentHostId) {
+          seat.isHost = false;
+          seat.isReady = false;
+        }
+        if (seat.id === targetId) {
+          seat.isHost = true;
+          seat.isReady = true;
+        }
+      }
+    }
+
+    this.hostId = targetId;
+    this.broadcast();
+    return { success: true };
+  }
+
+  public isIdleBetweenHands(): boolean {
+    return this.status === "lobby" || this.firstHandPending || this.gameState?.status === "complete";
+  }
+
   public takeSeat(clientId: string, targetIndex?: number): boolean {
-    if (this.status === "playing") return false;
+    if (!this.isIdleBetweenHands()) return false;
     const currentSeatIndex = this.seats.findIndex((s) => s?.id === clientId);
     if (currentSeatIndex !== -1) return true; // already seated
 
@@ -210,7 +278,7 @@ export class MultiplayerRoom {
   }
 
   public standUp(clientId: string): boolean {
-    if (this.status === "playing") return false;
+    if (!this.isIdleBetweenHands()) return false;
     const seatIndex = this.seats.findIndex((s) => s?.id === clientId);
     if (seatIndex === -1) return false;
 
@@ -322,11 +390,15 @@ export class MultiplayerRoom {
       return { success: false, error: "还未轮到你的回合" };
     }
 
+    const now = Date.now();
+    const elapsedMs = this.turnStartedAt > 0 ? Math.max(0, now - this.turnStartedAt) : 0;
+    const thinkingMeta = this.formatThinking(elapsedMs / 1000);
+
     this.clearTurnTimer();
     this.timeBankActive = false;
 
     try {
-      this.gameState = applyAction(this.gameState, actionInput);
+      this.gameState = applyAction(this.gameState, actionInput, undefined, thinkingMeta);
     } catch (err) {
       this.startTurnTimer();
       return { success: false, error: err instanceof Error ? err.message : "无效的行动" };
@@ -346,20 +418,69 @@ export class MultiplayerRoom {
       return { success: false, error: "牌局未初始化" };
     }
 
+    const currentSeated = this.seats.filter((s): s is RoomSeatPlayer => s !== null);
+    if (currentSeated.length < this.config.minPlayers) {
+      return {
+        success: false,
+        error: `当前在座人数不足 ${this.config.minPlayers} 人（当前 ${currentSeated.length} 人），至少需要 ${this.config.minPlayers} 人在座才能开始游戏`,
+      };
+    }
+    if (currentSeated.length > 8) {
+      return { success: false, error: "牌桌人数超过 8 人上限" };
+    }
+
+    const fundedPlayers = currentSeated.filter((s) => s.stack > 0);
+    if (fundedPlayers.length < this.config.minPlayers) {
+      return {
+        success: false,
+        error: `当前筹码充足玩家不足 ${this.config.minPlayers} 人（仅 ${fundedPlayers.length} 人），请筹码耗尽的玩家补充筹码（Rebuy）后再开始`,
+      };
+    }
+
     this.clearAutoNextHandTimer();
     this.clearTurnTimer();
     this.timeBankActive = false;
     this.handResultSummary = undefined;
     this.firstHandPending = false;
 
-    // Filter funded seats
-    const fundedSeats = this.gameState.seats.filter((s) => s.stack > 0);
-    if (fundedSeats.length < 2) {
-      this.status = "lobby";
-      this.gameState = null;
-      this.firstHandPending = false;
-      this.broadcast();
-      return { success: false, error: "存活筹码玩家不足 2 人，牌局已返回大厅" };
+    // Synchronize engine seats with room seats (maintaining clockwise order around table)
+    const prevButtonPlayerId = this.gameState.seats[this.gameState.buttonIndex]?.id;
+    const newEngineSeats: SeatState[] = currentSeated.map((player) => {
+      const existing = this.gameState!.seats.find((s) => s.id === player.id);
+      if (existing) {
+        existing.name = player.name;
+        existing.stack = player.stack;
+        return existing;
+      }
+      return {
+        id: player.id,
+        name: player.name,
+        isHuman: true,
+        stack: player.stack,
+        holeCards: [],
+        folded: false,
+        allIn: false,
+        committedStreet: 0,
+        committedHand: 0,
+        acted: false,
+        raiseLocked: false,
+        stats: structuredClone(EMPTY_STATS),
+      };
+    });
+    this.gameState.seats = newEngineSeats;
+
+    if (this.gameState.handNumber > 0 && this.gameState.buttonIndex >= 0) {
+      const prevButtonPlayerId = this.gameState.seats[this.gameState.buttonIndex]?.id;
+      if (prevButtonPlayerId) {
+        const foundIdx = newEngineSeats.findIndex((s) => s.id === prevButtonPlayerId);
+        if (foundIdx !== -1) {
+          this.gameState.buttonIndex = foundIdx;
+        } else {
+          this.gameState.buttonIndex = this.gameState.buttonIndex % newEngineSeats.length;
+        }
+      }
+    } else {
+      this.gameState.buttonIndex = -1;
     }
 
     try {
@@ -371,9 +492,6 @@ export class MultiplayerRoom {
       this.broadcast();
       return { success: true };
     } catch (err) {
-      this.status = "lobby";
-      this.gameState = null;
-      this.broadcast();
       return { success: false, error: err instanceof Error ? err.message : "无法开始下一手" };
     }
   }
@@ -442,27 +560,42 @@ export class MultiplayerRoom {
         holeCards = [];
       }
 
-      return {
-        id: roomSeat.id,
-        name: roomSeat.name,
-        position: gameSeat ? this.getPositionName(gameSeat.id) : "",
-        stack: gameSeat?.stack ?? roomSeat.stack,
-        committedStreet: gameSeat?.committedStreet ?? 0,
-        committedHand: gameSeat?.committedHand ?? 0,
-        folded: gameSeat?.folded ?? false,
-        allIn: gameSeat?.allIn ?? false,
-        acted: gameSeat?.acted ?? false,
-        lastAction: gameSeat?.lastAction,
-        isHuman: true,
-        isHero,
-        holeCards,
-        stats: gameSeat?.stats ? structuredClone(gameSeat.stats) : structuredClone(EMPTY_STATS),
-        isReady: roomSeat.isReady,
-        isHost: roomSeat.isHost,
-        connected: roomSeat.connected,
-        timeBankCards: roomSeat.timeBankCards,
-      };
-    });
+        let lastActionThinkingSeconds = gameSeat?.lastActionThinkingSeconds;
+        let lastActionThinkingText = gameSeat?.lastActionThinkingText;
+        if (gameSeat?.folded && !lastActionThinkingText && this.gameState) {
+          for (let i = this.gameState.actionLog.length - 1; i >= 0; i--) {
+            const act = this.gameState.actionLog[i];
+            if (act.playerId === roomSeat.id && act.type === "fold") {
+              lastActionThinkingSeconds = act.thinkingSeconds;
+              lastActionThinkingText = act.thinkingText;
+              break;
+            }
+          }
+        }
+
+        return {
+          id: roomSeat.id,
+          name: roomSeat.name,
+          position: gameSeat ? this.getPositionName(gameSeat.id) : "",
+          stack: gameSeat?.stack ?? roomSeat.stack,
+          committedStreet: gameSeat?.committedStreet ?? 0,
+          committedHand: gameSeat?.committedHand ?? 0,
+          folded: gameSeat?.folded ?? false,
+          allIn: gameSeat?.allIn ?? false,
+          acted: gameSeat?.acted ?? false,
+          lastAction: gameSeat?.lastAction,
+          lastActionThinkingSeconds,
+          lastActionThinkingText,
+          isHuman: true,
+          isHero,
+          holeCards,
+          stats: gameSeat?.stats ? structuredClone(gameSeat.stats) : structuredClone(EMPTY_STATS),
+          isReady: roomSeat.isReady,
+          isHost: roomSeat.isHost,
+          connected: roomSeat.connected,
+          timeBankCards: roomSeat.timeBankCards,
+        };
+      });
 
     // Spectator list
     const spectatorsList = Array.from(this.spectators.values()).map((s) => ({
@@ -493,7 +626,7 @@ export class MultiplayerRoom {
 
     // God-mode equity calculation
     let godModeEquities: GodModeEquityItem[] | undefined;
-    if (godMode && this.gameState && this.gameState.status === "playing") {
+    if (godMode && this.gameState && (this.gameState.status === "playing" || this.gameState.status === "complete")) {
       const contenders = this.gameState.seats.map((seat, index) => ({
         playerId: seat.id,
         playerName: seat.name,
@@ -511,6 +644,16 @@ export class MultiplayerRoom {
     // Allowed to use extension card only if remaining time <= 5 seconds and cards > 0
     const canUseTimeBank = isMyTurn && myTimeBankCards > 0 && timeRemaining <= 5;
 
+    const buttonPlayerId = this.gameState && this.gameState.buttonIndex >= 0 && this.gameState.buttonIndex < this.gameState.seats.length
+      ? this.gameState.seats[this.gameState.buttonIndex]?.id
+      : undefined;
+    const tableButtonIndex = buttonPlayerId ? this.seats.findIndex((s) => s?.id === buttonPlayerId) : -1;
+
+    const activePlayerId = this.gameState && this.gameState.activeIndex >= 0 && this.gameState.activeIndex < this.gameState.seats.length
+      ? this.gameState.seats[this.gameState.activeIndex]?.id
+      : undefined;
+    const tableActiveIndex = activePlayerId ? this.seats.findIndex((s) => s?.id === activePlayerId) : -1;
+
     return {
       roomCode: this.code,
       status: this.status,
@@ -526,8 +669,8 @@ export class MultiplayerRoom {
       pot: this.gameState ? potSize(this.gameState) : 0,
       currentBet: this.gameState?.currentBet ?? 0,
       minRaise: this.gameState?.minRaise ?? this.config.bigBlind,
-      buttonIndex: this.gameState?.buttonIndex ?? -1,
-      activeIndex: this.gameState?.activeIndex ?? -1,
+      buttonIndex: tableButtonIndex,
+      activeIndex: tableActiveIndex,
       community: this.gameState?.community ?? [],
       myHoleCards,
       myTimeBankCards,
@@ -544,6 +687,7 @@ export class MultiplayerRoom {
       canStartGame: eligibility.canStart,
       cannotStartReason: eligibility.reason,
       handResultSummary: this.handResultSummary,
+      lastResult: this.gameState?.lastResult,
       firstHandPending: this.firstHandPending,
     };
   }
@@ -586,27 +730,17 @@ export class MultiplayerRoom {
   }
 
   private getPositionName(playerId: string): string {
-    if (!this.gameState) return "";
-    const activeSeats = this.gameState.seats.filter((s) => s.stack > 0 || s.committedHand > 0);
-    const seatIndex = activeSeats.findIndex((s) => s.id === playerId);
-    if (seatIndex === -1) return "";
-    const count = activeSeats.length;
-    const positions: Record<number, string[]> = {
-      2: ["BTN/SB", "BB"],
-      3: ["BTN", "SB", "BB"],
-      4: ["BTN", "SB", "BB", "CO"],
-      5: ["BTN", "SB", "BB", "HJ", "CO"],
-      6: ["BTN", "SB", "BB", "UTG", "HJ", "CO"],
-      7: ["BTN", "SB", "BB", "UTG", "LJ", "HJ", "CO"],
-      8: ["BTN", "SB", "BB", "UTG", "UTG+1", "LJ", "HJ", "CO"],
-    };
-    return positions[count]?.[seatIndex] ?? `位${seatIndex + 1}`;
+    if (!this.gameState || this.gameState.buttonIndex < 0) return "";
+    const engineIdx = this.gameState.seats.findIndex((s) => s.id === playerId);
+    if (engineIdx === -1) return "";
+    return getPosition(this.gameState, engineIdx);
   }
 
   private startTurnTimer(): void {
     this.clearTurnTimer();
     if (!this.gameState || this.gameState.status !== "playing") return;
 
+    this.turnStartedAt = Date.now();
     this.turnTotalTime = this.config.regularTurnSeconds;
     this.turnExpiresAt = Date.now() + this.config.regularTurnSeconds * 1000;
     this.turnTimer = setTimeout(() => {
@@ -620,6 +754,7 @@ export class MultiplayerRoom {
       this.turnTimer = null;
     }
     this.turnExpiresAt = 0;
+    this.turnStartedAt = 0;
   }
 
   private clearAutoNextHandTimer(): void {
@@ -631,6 +766,12 @@ export class MultiplayerRoom {
 
   private handleTimeout(): void {
     if (!this.gameState || this.gameState.status !== "playing") return;
+    const elapsedSec = this.turnStartedAt > 0
+      ? Math.max(1, Math.round((Date.now() - this.turnStartedAt) / 1000))
+      : (this.turnTotalTime || this.config.regularTurnSeconds);
+    const thinkingMeta = this.formatThinking(elapsedSec);
+
+    this.clearTurnTimer();
     const activeSeat = this.gameState.seats[this.gameState.activeIndex];
     if (!activeSeat) return;
 
@@ -639,12 +780,28 @@ export class MultiplayerRoom {
     this.timeBankActive = false;
 
     try {
-      this.gameState = applyAction(this.gameState, action);
+      this.gameState = applyAction(this.gameState, action, undefined, thinkingMeta);
       this.syncPlayerStacks();
       this.checkHandCompletion();
       this.broadcast();
-    } catch {
-      // Ignore
+    } catch (err) {
+      console.error("[MultiplayerRoom] Auto-fold on timeout failed:", err);
+      try {
+        activeSeat.folded = true;
+        activeSeat.acted = true;
+        activeSeat.lastAction = "fold";
+        activeSeat.lastActionThinkingSeconds = thinkingMeta.thinkingSeconds;
+        activeSeat.lastActionThinkingText = thinkingMeta.thinkingText;
+        const activeRemaining = this.gameState.seats.filter((s) => !s.folded);
+        if (activeRemaining.length === 1) {
+          this.gameState = settleUncontested(this.gameState, activeRemaining[0]);
+        }
+        this.syncPlayerStacks();
+        this.checkHandCompletion();
+        this.broadcast();
+      } catch (fallbackErr) {
+        console.error("[MultiplayerRoom] Emergency advance failed:", fallbackErr);
+      }
     }
   }
 
@@ -657,7 +814,11 @@ export class MultiplayerRoom {
       if (this.gameState.lastResult) {
         const winnerNames = this.gameState.lastResult.winnerSettlements.map((w) => w.playerName).join("、");
         const pot = this.gameState.lastResult.potTotal;
-        this.handResultSummary = `🏆 本手结算：${winnerNames} 赢得了底池 ${pot} 筹码！`;
+        const mainWinner = this.gameState.lastResult.playerSettlements?.find((p) => p.isWinner);
+        const netStr = mainWinner && this.gameState.lastResult.winnerSettlements.length === 1 && mainWinner.net > 0
+          ? `（净胜 +${mainWinner.net}）`
+          : "";
+        this.handResultSummary = `🏆 本手结算：${winnerNames} 赢得了底池 ${pot} 筹码${netStr}！`;
       }
       // 不会自动进入下一手，必须等待房主主动点击「开始下一手」
     } else {

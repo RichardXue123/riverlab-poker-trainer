@@ -72,11 +72,22 @@ export class MultiplayerServer {
     });
 
     ws.on("message", (data) => {
+      let message: ClientMessage;
       try {
-        const message: ClientMessage = JSON.parse(data.toString());
+        message = JSON.parse(data.toString());
+      } catch (err) {
+        this.send(ws, { type: "ERROR", message: "消息格式错误" });
+        return;
+      }
+
+      try {
         this.handleClientMessage(session, message);
       } catch (err) {
-        this.send(ws, { type: "ERROR", message: "消息解析失败" });
+        console.error("[MultiplayerServer] Message handler error:", message.type, err);
+        this.send(ws, {
+          type: "ERROR",
+          message: err instanceof Error ? err.message : "服务器处理异常",
+        });
       }
     });
 
@@ -250,6 +261,16 @@ export class MultiplayerServer {
         const room = this.getRoomForSession(session);
         if (room) {
           room.setGodMode(session.id, msg.enabled);
+        }
+        break;
+      }
+      case "TRANSFER_HOST": {
+        const room = this.getRoomForSession(session);
+        if (room) {
+          const res = room.transferHost(session.id, msg.targetPlayerId);
+          if (!res.success && res.error) {
+            this.send(ws, { type: "ERROR", message: res.error });
+          }
         }
         break;
       }

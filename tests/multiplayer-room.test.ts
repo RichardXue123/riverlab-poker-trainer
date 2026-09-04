@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { getLegalActions } from "../lib/poker/engine";
 import { MultiplayerRoom } from "../server/multiplayer-room";
 
 test("enforces 4-8 players and all-ready rule before starting game", () => {
@@ -160,4 +161,386 @@ test("enforces thinking time, time bank card usage (<=5s, +30s) and auto-fold", 
 
   room.cleanup();
 });
+
+test("forces auto-fold upon timeout when checking is available (toCall === 0)", () => {
+  const room = new MultiplayerRoom("TIMEOUT_CHECK", "host-1", "房主", () => {}, {
+    minPlayers: 3,
+    regularTurnSeconds: 20,
+  });
+
+  room.join("p2", "玩家2");
+  room.join("p3", "玩家3");
+  room.toggleReady("p2");
+  room.toggleReady("p3");
+  room.startGame("host-1");
+  room.nextHand("host-1");
+
+  // In 3-player hand:
+  // button is host-1 (index 0).
+  // SB is p2 (index 1), BB is p3 (index 2).
+  // First actor preflop is BTN (host-1).
+  const btnSeat = room.gameState!.seats[room.gameState!.activeIndex];
+  assert.equal(btnSeat.id, "host-1");
+  // BTN calls
+  room.handleAction("host-1", { type: "call" });
+  // SB calls
+  room.handleAction("p2", { type: "call" });
+  // Now BB (p3) has the option, committed 10, currentBet 10 -> toCall is 0!
+  const bbSeat = room.gameState!.seats[room.gameState!.activeIndex];
+  assert.equal(bbSeat.id, "p3");
+  const bbLegal = getLegalActions(room.gameState!, "p3");
+  assert.equal(bbLegal.toCall, 0);
+  assert.equal(bbLegal.canCheck, true);
+  assert.equal(bbLegal.canFold, false); // UI hides fold button
+
+  // Time expires for BB!
+  (room as unknown as { handleTimeout: () => void }).handleTimeout();
+
+  // BB must be forcibly folded!
+  const foldedBb = room.gameState!.seats.find((s) => s.id === "p3")!;
+  assert.equal(foldedBb.folded, true, "BB should be forcibly folded on timeout even though checking was free");
+
+  // Since preflop round is complete and 2 players remain (host-1, p2), game advances to flop!
+  assert.equal(room.gameState!.street, "flop");
+  assert.equal(room.gameState!.community.length, 3);
+
+  // On flop, first actor has toCall === 0. Test flop timeout as well:
+  const flopActorId = room.gameState!.seats[room.gameState!.activeIndex].id;
+  (room as unknown as { handleTimeout: () => void }).handleTimeout();
+  const foldedFlopActor = room.gameState!.seats.find((s) => s.id === flopActorId)!;
+  assert.equal(foldedFlopActor.folded, true, "Flop actor should be folded on timeout");
+
+  // Now only 1 player remains, hand should settle uncontested!
+  assert.equal(room.gameState!.status, "complete");
+  assert.ok(room.handResultSummary);
+
+  room.cleanup();
+});
+
+test("handles player leaving during active turn and out-of-turn cleanly", () => {
+  const room = new MultiplayerRoom("LEAVE_TEST", "host-1", "房主", () => {}, {
+    minPlayers: 3,
+    regularTurnSeconds: 20,
+  });
+
+  room.join("p2", "玩家2");
+  room.join("p3", "玩家3");
+  room.toggleReady("p2");
+  room.toggleReady("p3");
+  room.startGame("host-1");
+  room.nextHand("host-1");
+
+  // Active player preflop is host-1
+  const activeId = room.gameState!.seats[room.gameState!.activeIndex].id;
+  assert.equal(activeId, "host-1");
+
+  // Host leaves during their active turn -> should auto-fold host and advance to next player
+  room.leave("host-1");
+  const nextActiveId = room.gameState!.seats[room.gameState!.activeIndex].id;
+  assert.notEqual(nextActiveId, "host-1");
+  const hostSeat = room.gameState!.seats.find((s) => s.id === "host-1")!;
+  assert.equal(hostSeat.folded, true);
+
+  // Now 2 players remain (p2, p3). p3 leaves out of turn -> only p2 remains, hand settles uncontested!
+  const currentActorId = room.gameState!.seats[room.gameState!.activeIndex].id;
+  const nonActorId = currentActorId === "p2" ? "p3" : "p2";
+  const survivorId = currentActorId === "p2" ? "p2" : "p3";
+
+  room.leave(nonActorId);
+  assert.equal(room.gameState!.status, "complete");
+  assert.equal(room.gameState!.lastResult?.winnerIds[0], survivorId);
+
+  room.cleanup();
+});
+
+test("supports manual host transfer and automatic inheritance in lobby and during game", () => {
+  const room = new MultiplayerRoom("TRANSFER_TEST", "host-1", "原房主", () => {}, {
+    minPlayers: 3,
+    regularTurnSeconds: 20,
+  });
+
+  room.join("p2", "玩家2");
+  room.join("p3", "玩家3");
+
+  // 1. In lobby, non-host cannot transfer host
+  const unauthorizedTransfer = room.transferHost("p2", "p3");
+  assert.equal(unauthorizedTransfer.success, false);
+  assert.equal(unauthorizedTransfer.error, "只有房主才能转让房主身份");
+
+  // 2. In lobby, host transfers to p2
+  const transferOk = room.transferHost("host-1", "p2");
+  assert.equal(transferOk.success, true);
+  assert.equal(room.hostId, "p2");
+  const p2Seat = room.seats.find((s) => s?.id === "p2")!;
+  const host1Seat = room.seats.find((s) => s?.id === "host-1")!;
+  assert.equal(p2Seat.isHost, true);
+  assert.equal(p2Seat.isReady, true);
+  assert.equal(host1Seat.isHost, false);
+
+  // 3. Ready up and start game under new host p2
+  room.toggleReady("host-1");
+  room.toggleReady("p3");
+  const oldHostStart = room.startGame("host-1");
+  assert.equal(oldHostStart.success, false, "Old host should no longer have start permission");
+
+  const newHostStart = room.startGame("p2");
+  assert.equal(newHostStart.success, true, "New host p2 can start game");
+  assert.equal(room.status, "playing");
+  assert.equal(room.firstHandPending, true);
+
+  // 4. During active table (first hand pending), transfer host from p2 to p3
+  const activeTransfer = room.transferHost("p2", "p3");
+  assert.equal(activeTransfer.success, true);
+  assert.equal(room.hostId, "p3");
+  const p3Seat = room.seats.find((s) => s?.id === "p3")!;
+  assert.equal(p3Seat.isHost, true);
+  assert.equal(room.seats.find((s) => s?.id === "p2")!.isHost, false);
+
+  // 5. p3 (now host) confirms and starts first hand
+  const p2NextHandFail = room.nextHand("p2");
+  assert.equal(p2NextHandFail.success, false, "p2 is no longer host and cannot start hand");
+  const p3NextHandOk = room.nextHand("p3");
+  assert.equal(p3NextHandOk.success, true, "p3 as new host starts hand");
+  assert.equal(room.firstHandPending, false);
+
+  // 6. During game, host p3 leaves the room -> host should automatically transfer to next player
+  room.leave("p3");
+  // Host must be transferred to one of the remaining players (host-1 or p2)
+  assert.notEqual(room.hostId, "p3");
+  const currentHost = room.seats.find((s) => s?.id === room.hostId);
+  assert.ok(currentHost, "A remaining seated player should be the new host");
+  assert.equal(currentHost?.isHost, true);
+
+  room.cleanup();
+});
+
+test("supports between-hands spectator joining table, seated player standing up, and enforces 4-8 players rule", () => {
+  const room = new MultiplayerRoom("TABLE_SEAT_TEST", "host-1", "房主", () => {}, {
+    minPlayers: 4,
+    regularTurnSeconds: 20,
+  });
+
+  room.join("p2", "玩家2");
+  room.join("p3", "玩家3");
+  room.join("p4", "玩家4");
+  room.join("spec-1", "旁观者1", true); // join as spectator
+
+  assert.equal(room.seatedCount, 4);
+  assert.equal(room.spectators.size, 1);
+
+  // 1. Ready up and start game -> enters table view with firstHandPending
+  room.toggleReady("p2");
+  room.toggleReady("p3");
+  room.toggleReady("p4");
+  const startRes = room.startGame("host-1");
+  assert.equal(startRes.success, true);
+  assert.equal(room.firstHandPending, true);
+
+  // 2. Before first hand starts (firstHandPending), a player can stand up to spectate
+  const p4StandUpBeforeFirst = room.standUp("p4");
+  assert.equal(p4StandUpBeforeFirst, true);
+  assert.equal(room.seatedCount, 3);
+  assert.equal(room.spectators.has("p4"), true);
+
+  // 3. Trying to start first hand with only 3 players seated should fail (enforcing 4-8 rule)!
+  const startFail3Players = room.nextHand("host-1");
+  assert.equal(startFail3Players.success, false);
+  assert.ok(startFail3Players.error?.includes("当前在座人数不足 4 人"));
+
+  // 4. Spectator 1 takes seat (joins table)
+  const specTakeSeat = room.takeSeat("spec-1");
+  assert.equal(specTakeSeat, true);
+  assert.equal(room.seatedCount, 4);
+  assert.equal(room.spectators.has("spec-1"), false);
+
+  // 5. Now 4 players are seated (host-1, p2, p3, spec-1), nextHand should succeed!
+  const firstHandRes = room.nextHand("host-1");
+  assert.equal(firstHandRes.success, true);
+  assert.equal(room.firstHandPending, false);
+  assert.equal(room.gameState?.status, "playing");
+  assert.equal(room.gameState?.seats.length, 4);
+  assert.ok(room.gameState?.seats.some((s) => s.id === "spec-1"), "spec-1 is now in the engine game seats");
+  assert.ok(!room.gameState?.seats.some((s) => s.id === "p4"), "p4 is not in the engine game seats");
+
+  // 6. While hand is actively playing, neither takeSeat nor standUp is allowed
+  assert.equal(room.standUp("p2"), false, "Cannot stand up mid-hand");
+  assert.equal(room.takeSeat("p4"), false, "Spectator cannot join mid-hand");
+
+  // 7. Complete the hand: fold remaining players so hand settles
+  const activeActors = room.gameState!.seats.filter((s) => !s.folded);
+  // Auto-fold until only 1 remains or hand completes
+  for (let i = 0; i < activeActors.length - 1; i += 1) {
+    (room as unknown as { handleTimeout: () => void }).handleTimeout();
+  }
+  assert.equal(room.gameState!.status, "complete");
+
+  // 8. Hand is complete (between hands): p2 stands up to spectate
+  const p2StandUp = room.standUp("p2");
+  assert.equal(p2StandUp, true);
+  assert.equal(room.seatedCount, 3);
+  assert.equal(room.spectators.has("p2"), true);
+
+  // 9. Host attempts nextHand with 3 players -> should be blocked!
+  const nextHandFail3 = room.nextHand("host-1");
+  assert.equal(nextHandFail3.success, false);
+  assert.ok(nextHandFail3.error?.includes("当前在座人数不足 4 人"));
+
+  // 10. Spectator p4 takes a specific seat (e.g. seat index 5)
+  const p4TakeSeat5 = room.takeSeat("p4", 5);
+  assert.equal(p4TakeSeat5, true);
+  assert.equal(room.seats[5]?.id, "p4");
+  assert.equal(room.seatedCount, 4);
+
+  // 11. Now 4 players seated again (host-1, p3, spec-1, p4). nextHand succeeds!
+  const nextHandRes = room.nextHand("host-1");
+  assert.equal(nextHandRes.success, true);
+  assert.equal(room.gameState?.status, "playing");
+  assert.equal(room.gameState?.seats.length, 4);
+  assert.ok(room.gameState?.seats.some((s) => s.id === "p4"), "p4 received cards in new hand");
+  assert.ok(!room.gameState?.seats.some((s) => s.id === "p2"), "p2 is spectating and was not dealt cards");
+
+  // 12. Verify client state mapping
+  const hostClientState = room.buildClientState("host-1");
+  assert.equal(hostClientState.seats.length, 8);
+  assert.equal(hostClientState.seats[5].id, "p4");
+  assert.equal(hostClientState.isSpectator, false);
+
+  const p2ClientState = room.buildClientState("p2");
+  assert.equal(p2ClientState.isSpectator, true);
+
+  room.cleanup();
+});
+
+test("startGame and buildClientState succeed without throwing when buttonIndex is -1", () => {
+  const room = new MultiplayerRoom("START_TEST", "host-1", "房主", () => {}, {
+    minPlayers: 3,
+  });
+  room.join("p2", "玩家2");
+  room.join("p3", "玩家3");
+  room.toggleReady("p2");
+  room.toggleReady("p3");
+
+  const startRes = room.startGame("host-1");
+  assert.equal(startRes.success, true);
+  assert.equal(room.gameState?.buttonIndex, -1);
+
+  // Calling buildClientState for all players must NOT throw!
+  const hostState = room.buildClientState("host-1");
+  assert.equal(hostState.buttonIndex, -1);
+  assert.equal(hostState.status, "playing");
+
+  const p2State = room.buildClientState("p2");
+  assert.equal(p2State.buttonIndex, -1);
+
+  room.cleanup();
+});
+
+test("accurately logs thinking time and deep thinking formatting in multiplayer mode", () => {
+  const room = new MultiplayerRoom("THINK_TEST", "host-1", "房主", () => {}, {
+    minPlayers: 3,
+    regularTurnSeconds: 20,
+  });
+
+  // 1. Test formatThinking logic directly
+  // Under regularTurnSeconds = 20, half is 10s.
+  // Thinking <= 10s is regular thinking; > 10s is deep thinking.
+  const t1 = room.formatThinking(5);
+  assert.equal(t1.thinkingSeconds, 5);
+  assert.equal(t1.thinkingText, "已思考5s");
+  assert.equal(t1.isDeepThinking, false);
+
+  const tHalf = room.formatThinking(10);
+  assert.equal(tHalf.thinkingSeconds, 10);
+  assert.equal(tHalf.thinkingText, "已思考10s");
+  assert.equal(tHalf.isDeepThinking, false);
+
+  const tDeep11 = room.formatThinking(11);
+  assert.equal(tDeep11.thinkingSeconds, 11);
+  assert.equal(tDeep11.thinkingText, "已深度思考11s");
+  assert.equal(tDeep11.isDeepThinking, true);
+
+  const tDeep20 = room.formatThinking(20);
+  assert.equal(tDeep20.thinkingSeconds, 20);
+  assert.equal(tDeep20.thinkingText, "已深度思考20s");
+  assert.equal(tDeep20.isDeepThinking, true);
+
+  // Rounding test (4.7s -> 5s, 0.2s -> 1s)
+  const tRound = room.formatThinking(4.7);
+  assert.equal(tRound.thinkingSeconds, 5);
+  assert.equal(tRound.thinkingText, "已思考5s");
+
+  const tMin = room.formatThinking(0.2);
+  assert.equal(tMin.thinkingSeconds, 1);
+  assert.equal(tMin.thinkingText, "已思考1s");
+
+  // 2. Test live room action logging with simulated elapsed thinking times
+  room.join("p2", "玩家2");
+  room.join("p3", "玩家3");
+  room.toggleReady("p2");
+  room.toggleReady("p3");
+  room.startGame("host-1");
+  room.nextHand("host-1");
+
+  // First actor is BTN (host-1)
+  assert.equal(room.gameState!.seats[room.gameState!.activeIndex].id, "host-1");
+
+  // Simulate host thinking for 5s
+  room.turnStartedAt = Date.now() - 5000;
+  const hostActionRes = room.handleAction("host-1", { type: "call" });
+  assert.equal(hostActionRes.success, true);
+
+  const hostAction = room.gameState!.actionLog[room.gameState!.actionLog.length - 1];
+  assert.equal(hostAction.playerName, "房主");
+  assert.equal(hostAction.type, "call");
+  assert.equal(hostAction.thinkingSeconds, 5);
+  assert.equal(hostAction.thinkingText, "已思考5s");
+  assert.equal(hostAction.isDeepThinking, false);
+
+  // Next actor is SB (p2)
+  assert.equal(room.gameState!.seats[room.gameState!.activeIndex].id, "p2");
+
+  // Simulate p2 thinking deeply for 15s (> 20/2 = 10s)
+  room.turnStartedAt = Date.now() - 15000;
+  const p2ActionRes = room.handleAction("p2", { type: "call" });
+  assert.equal(p2ActionRes.success, true);
+
+  const p2Action = room.gameState!.actionLog[room.gameState!.actionLog.length - 1];
+  assert.equal(p2Action.playerName, "玩家2");
+  assert.equal(p2Action.type, "call");
+  assert.equal(p2Action.thinkingSeconds, 15);
+  assert.equal(p2Action.thinkingText, "已深度思考15s");
+  assert.equal(p2Action.isDeepThinking, true);
+
+  // Next actor is BB (p3)
+  assert.equal(room.gameState!.seats[room.gameState!.activeIndex].id, "p3");
+
+  // Simulate p3 thinking for full 20s until timeout
+  room.turnStartedAt = Date.now() - 20000;
+  (room as unknown as { handleTimeout: () => void }).handleTimeout();
+
+  const timeoutAction = room.gameState!.actionLog[room.gameState!.actionLog.length - 1];
+  assert.equal(timeoutAction.playerName, "玩家3");
+  assert.equal(timeoutAction.type, "fold");
+  assert.equal(timeoutAction.thinkingSeconds, 20);
+  assert.equal(timeoutAction.thinkingText, "已深度思考20s");
+  assert.equal(timeoutAction.isDeepThinking, true);
+
+  // Verify buildClientState passes thinking metadata to all clients
+  const clientState = room.buildClientState("host-1");
+  const lastThreeActions = clientState.actionLog.slice(-3);
+  assert.equal(lastThreeActions[0].thinkingText, "已思考5s");
+  assert.equal(lastThreeActions[0].isDeepThinking, false);
+  assert.equal(lastThreeActions[1].thinkingText, "已深度思考15s");
+  assert.equal(lastThreeActions[1].isDeepThinking, true);
+  assert.equal(lastThreeActions[2].thinkingText, "已深度思考20s");
+  assert.equal(lastThreeActions[2].isDeepThinking, true);
+
+  // Also verify seat states reflect the lastActionThinkingText
+  const p3Seat = clientState.seats.find((s) => s.id === "p3");
+  assert.equal(p3Seat?.lastActionThinkingText, "已深度思考20s");
+
+  room.cleanup();
+});
+
+
 

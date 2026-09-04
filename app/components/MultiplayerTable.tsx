@@ -8,6 +8,7 @@ import { playPokerSound } from "@/lib/poker/sound";
 import type { Card, PlayerActionInput } from "@/lib/poker/types";
 import type { MultiplayerTableState } from "@/server/multiplayer-types";
 import { AudioControls, formatChips } from "./PokerTrainer";
+import { PokerTutorial } from "./PokerTutorial";
 
 interface MultiplayerTableProps {
   state: MultiplayerTableState;
@@ -25,9 +26,12 @@ interface MultiplayerTableProps {
   onRebuy: () => void;
   onToggleGodMode: (enabled: boolean) => void;
   onLeaveRoom: () => void;
+  onTransferHost?: (targetPlayerId: string) => void;
+  onTakeSeat?: (seatIndex: number) => void;
+  onStandUp?: () => void;
 }
 
-type MpPanelTab = "timeline" | "glossary" | "equity";
+type MpPanelTab = "timeline" | "tutorial" | "glossary" | "equity";
 
 function CardFace({ card, hidden = false, small = false }: { card?: Card; hidden?: boolean; small?: boolean }) {
   if (hidden) {
@@ -67,6 +71,9 @@ export default function MultiplayerTable({
   onNextHand,
   onToggleGodMode,
   onLeaveRoom,
+  onTransferHost,
+  onTakeSeat,
+  onStandUp,
 }: MultiplayerTableProps) {
   const [tab, setTab] = useState<MpPanelTab>("timeline");
 
@@ -82,6 +89,10 @@ export default function MultiplayerTable({
   const isHandComplete = state.street === "complete" || Boolean(state.handResultSummary);
   const isComplete = isHandComplete;
   const isWaitingForHost = isFirstHandPending || isHandComplete;
+
+  const seatedPlayers = state.seats.filter((s) => s.id && !s.id.startsWith("empty-"));
+  const seatedCount = seatedPlayers.length;
+  const canStartNext = seatedCount >= state.config.minPlayers && seatedCount <= 8;
 
   // Live client countdown & smooth progress bar
   const [remainingSeconds, setRemainingSeconds] = useState(state.turnTimeRemaining);
@@ -144,7 +155,6 @@ export default function MultiplayerTable({
     setBetSlider(Math.max(minTo, Math.min(maxTo, base)));
   };
 
-  const seatedCount = state.seats.filter((s) => s.id && !s.id.startsWith("empty-")).length;
   const showEquityTab = Boolean(state.isSpectator || state.godMode);
 
   return (
@@ -184,10 +194,72 @@ export default function MultiplayerTable({
               {state.godMode ? "👁️ 上帝视角: 开启" : "👁️ 开启上帝视角"}
             </button>
           )}
+          {isWaitingForHost && state.isSpectator && onTakeSeat && seatedCount < 8 && (
+            <button
+              type="button"
+              className="table-quick-sit-btn"
+              onClick={() => {
+                const firstEmpty = state.seats.findIndex((s) => !s.id || s.id.startsWith("empty-"));
+                if (firstEmpty !== -1) {
+                  onTakeSeat(firstEmpty);
+                }
+              }}
+              title="入座第一个空闲座位"
+            >
+              💺 快速入座
+            </button>
+          )}
           {!state.isSpectator && (
             <span>
               筹码 <b>{formatChips(mySeat?.stack ?? 0)}</b>
             </span>
+          )}
+          {isWaitingForHost && !state.isSpectator && onStandUp && (
+            <button
+              type="button"
+              className="table-standup-btn"
+              onClick={() => {
+                if (window.confirm("确认离座转为观战吗？（下一手牌将不再为你发牌）")) {
+                  onStandUp();
+                }
+              }}
+              title="离开座位转为观战"
+            >
+              🚶 转为观战
+            </button>
+          )}
+          {state.isHost && onTransferHost && (
+            <select
+              className="table-host-select"
+              defaultValue=""
+              onChange={(e) => {
+                const targetId = e.target.value;
+                if (!targetId) return;
+                const target = state.seats.find((s) => s.id === targetId) ?? state.spectators.find((s) => s.id === targetId);
+                const name = target?.name ?? "该玩家";
+                if (window.confirm(`确认在对局中将房主身份移交给「${name}」吗？`)) {
+                  onTransferHost(targetId);
+                }
+                e.target.value = "";
+              }}
+              title="移交房主给其他玩家"
+            >
+              <option value="" disabled>👑 移交房主...</option>
+              {state.seats
+                .filter((s) => s.id && !s.id.startsWith("empty-") && s.id !== state.myId)
+                .map((s) => (
+                  <option key={s.id} value={s.id}>
+                    在座: {s.name} (#{state.seats.indexOf(s) + 1})
+                  </option>
+                ))}
+              {state.spectators
+                .filter((s) => s.id !== state.myId)
+                .map((s) => (
+                  <option key={s.id} value={s.id}>
+                    旁观: {s.name}
+                  </option>
+                ))}
+            </select>
           )}
           <button type="button" onClick={onLeaveRoom}>
             离开房间
@@ -233,11 +305,37 @@ export default function MultiplayerTable({
             {/* 8 Seats - Exact match of single-player seat styling */}
             {state.seats.map((seat, index) => {
               const isEmpty = !seat.id || seat.id.startsWith("empty-");
-              if (isEmpty) return null;
+              if (isEmpty) {
+                if (!isWaitingForHost) return null;
+                return (
+                  <div
+                    key={`empty-${index}`}
+                    className={`table-seat seat-${index} seat-empty`}
+                  >
+                    <div className="seat-empty-panel">
+                      <span className="seat-empty-label">座位 {index + 1}</span>
+                      {state.isSpectator && onTakeSeat && (
+                        <button
+                          type="button"
+                          className="seat-take-btn"
+                          onClick={() => onTakeSeat(index)}
+                          title={`入座座位 ${index + 1}`}
+                        >
+                          💺 入座此位
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              }
 
               const isActive = state.activeIndex === index;
               const isHero = seat.id === state.myId;
               const showCards = isHero || state.godMode || state.street === "showdown" || state.street === "complete";
+              const seatEquity = state.godMode ? state.godModeEquities?.find((eq) => eq.playerId === seat.id) : undefined;
+              const seatSettlement = isHandComplete
+                ? state.lastResult?.playerSettlements?.find((s) => s.playerId === seat.id)
+                : undefined;
 
               return (
                 <div
@@ -246,6 +344,45 @@ export default function MultiplayerTable({
                     seat.folded ? "seat-folded" : ""
                   }`}
                 >
+                  {/* Floating Settlement Profit/Loss Badge */}
+                  {isHandComplete && seatSettlement && (
+                    <div
+                      className={`seat-settlement-badge ${
+                        seatSettlement.net > 0 ? "win" : seatSettlement.net < 0 ? "loss" : "even"
+                      }`}
+                      title={`投入: ${formatChips(seatSettlement.contributed)} · 获得: ${formatChips(seatSettlement.received)} · 净结果: ${seatSettlement.net > 0 ? "+" : ""}${formatChips(seatSettlement.net)}`}
+                    >
+                      <span className="settlement-badge-tag">{seatSettlement.net > 0 ? "胜" : seatSettlement.net < 0 ? "亏" : "平"}</span>
+                      <span className="settlement-badge-amount">
+                        {seatSettlement.net > 0 ? "+" : seatSettlement.net < 0 ? "−" : "±0"}{formatChips(Math.abs(seatSettlement.net))}
+                      </span>
+                      <small className="settlement-badge-bb">
+                        ({seatSettlement.net > 0 ? "+" : seatSettlement.net < 0 ? "−" : ""}{(Math.abs(seatSettlement.net) / state.bigBlind).toFixed(1)}BB)
+                      </small>
+                    </div>
+                  )}
+
+                  {/* Floating Live Equity Pill right beside player's cards/avatar */}
+                  {state.godMode && seatEquity && (
+                    <div
+                      className={`seat-floating-equity ${seatEquity.isFolded ? "folded" : ""} ${
+                        !seatEquity.isFolded && seatEquity.equity >= 0.5 ? "leading" : ""
+                      }`}
+                      title={
+                        seatEquity.isFolded
+                          ? "已弃牌 (胜率 0.0%)"
+                          : `当前真实胜率: ${seatEquity.equityFormatted || `${(seatEquity.equity * 100).toFixed(1)}%`}`
+                      }
+                    >
+                      <span className="eq-pill-tag">{seatEquity.isFolded ? "弃牌" : "胜率"}</span>
+                      <b className="eq-pill-val">
+                        {seatEquity.isFolded
+                          ? "0.0%"
+                          : (seatEquity.equityFormatted || `${(seatEquity.equity * 100).toFixed(1)}%`)}
+                      </b>
+                    </div>
+                  )}
+
                   <div className="seat-cards">
                     {seat.holeCards.length > 0 ? (
                       seat.holeCards.map((c, i) => (
@@ -264,17 +401,98 @@ export default function MultiplayerTable({
                   <div className="seat-panel">
                     {seat.position && <span className="seat-position">{seat.position}</span>}
                     <b>
+                      {seat.isHost && <span title="当前房主">👑 </span>}
                       {seat.name} {isHero && "(你)"}
                     </b>
                     <strong>
                       {formatChips(seat.stack)}{" "}
                       <small>{(seat.stack / state.bigBlind).toFixed(0)}BB</small>
                     </strong>
-                    {seat.folded && <span className="seat-action">弃牌</span>}
-                    {seat.allIn && <span className="seat-action" style={{ color: "#ffd6d3" }}>ALL-IN</span>}
+                    {state.isHost && !isHero && onTransferHost && (
+                      <button
+                        type="button"
+                        className="seat-transfer-host-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm(`确认在对局中将房主身份移交给「${seat.name}」吗？`)) {
+                            onTransferHost(seat.id);
+                          }
+                        }}
+                        title="移交房主给此玩家"
+                      >
+                        👑 设为房主
+                      </button>
+                    )}
+                    {isHero && isWaitingForHost && onStandUp && (
+                      <button
+                        type="button"
+                        className="seat-standup-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm("确认离座转为观战吗？（下一手牌将不再为你发牌）")) {
+                            onStandUp();
+                          }
+                        }}
+                        title="离座转为观战"
+                      >
+                        🚶 离座观战
+                      </button>
+                    )}
+                    {/* Live God Mode Equity & Hand Display in Seat Panel */}
+                    {state.godMode && seatEquity && (
+                      <div
+                        className={`seat-live-equity ${seatEquity.isFolded ? "folded" : ""} ${
+                          !seatEquity.isFolded && seatEquity.equity >= 0.5 ? "leading" : ""
+                        }`}
+                        title={
+                          seatEquity.isFolded
+                            ? "已弃牌 (胜率 0.0%)"
+                            : `实时胜率: ${seatEquity.equityFormatted || `${(seatEquity.equity * 100).toFixed(1)}%`} · 当前手牌: ${seatEquity.handName || ""}`
+                        }
+                      >
+                        <span className="eq-label">胜率</span>
+                        <b className="eq-pct">
+                          {seatEquity.isFolded
+                            ? "0.0%"
+                            : (seatEquity.equityFormatted || `${(seatEquity.equity * 100).toFixed(1)}%`)}
+                        </b>
+                        {!seatEquity.isFolded && seatEquity.handName && (
+                          <span className="eq-hand">{seatEquity.handName}</span>
+                        )}
+                      </div>
+                    )}
+                    {seat.folded && (
+                      <span
+                        className={`seat-action ${seat.lastActionThinkingText?.includes("已深度思考") ? "deep-action" : ""}`}
+                        title={seat.lastActionThinkingText ? `弃牌 · ${seat.lastActionThinkingText}` : undefined}
+                      >
+                        弃牌
+                        {seat.lastActionThinkingText && (
+                          <span className="seat-action-time"> · {seat.lastActionThinkingText}</span>
+                        )}
+                      </span>
+                    )}
+                    {seat.allIn && (
+                      <span
+                        className={`seat-action ${seat.lastActionThinkingText?.includes("已深度思考") ? "deep-action" : ""}`}
+                        style={{ color: "#ffd6d3" }}
+                        title={seat.lastActionThinkingText ? `ALL-IN · ${seat.lastActionThinkingText}` : undefined}
+                      >
+                        ALL-IN
+                        {seat.lastActionThinkingText && (
+                          <span className="seat-action-time"> · {seat.lastActionThinkingText}</span>
+                        )}
+                      </span>
+                    )}
                     {!seat.folded && !seat.allIn && seat.lastAction && (
-                      <span className="seat-action">
+                      <span
+                        className={`seat-action ${seat.lastActionThinkingText?.includes("已深度思考") ? "deep-action" : ""}`}
+                        title={seat.lastActionThinkingText ? `${ACTION_LABELS[seat.lastAction as keyof typeof ACTION_LABELS] || seat.lastAction} · ${seat.lastActionThinkingText}` : undefined}
+                      >
                         {ACTION_LABELS[seat.lastAction as keyof typeof ACTION_LABELS] || seat.lastAction}
+                        {seat.lastActionThinkingText && (
+                          <span className="seat-action-time"> · {seat.lastActionThinkingText}</span>
+                        )}
                       </span>
                     )}
                     {isActive && (
@@ -312,15 +530,36 @@ export default function MultiplayerTable({
               <div className="hand-complete">
                 <div className="hand-result-copy">
                   <span>准备就绪</span>
-                  <strong>全员入座完毕 · 待房主确认发牌</strong>
+                  <strong>
+                    {canStartNext
+                      ? "全员入座完毕 · 待房主确认发牌"
+                      : `牌桌人数不足：当前 ${seatedCount} 人，至少需要 ${state.config.minPlayers} 人在座才能开始游戏`}
+                  </strong>
                 </div>
                 <div>
                   {state.isHost ? (
-                    <button className="primary-button" onClick={onNextHand}>
-                      开始第一手 <span>🚀</span>
+                    <button
+                      className="primary-button"
+                      onClick={onNextHand}
+                      disabled={!canStartNext}
+                      title={
+                        !canStartNext
+                          ? `当前在座人数 (${seatedCount}/${state.config.minPlayers})，至少需要 ${state.config.minPlayers} 人在座才能开始`
+                          : undefined
+                      }
+                    >
+                      {canStartNext ? (
+                        <>开始第一手 <span>🚀</span></>
+                      ) : (
+                        <>等待玩家入座 ({seatedCount}/${state.config.minPlayers}人) ⏳</>
+                      )}
                     </button>
                   ) : (
-                    <span className="empty-copy">等待房主确认并开启第一手...</span>
+                    <span className="empty-copy">
+                      {canStartNext
+                        ? "等待房主确认并开启第一手..."
+                        : `等待更多玩家入座 (${seatedCount}/${state.config.minPlayers}人)...`}
+                    </span>
                   )}
                 </div>
               </div>
@@ -328,15 +567,78 @@ export default function MultiplayerTable({
               <div className="hand-complete">
                 <div className="hand-result-copy">
                   <span>本手结束</span>
-                  <strong>{state.handResultSummary || "牌局结算完成"}</strong>
+                  <strong>
+                    {state.handResultSummary || "牌局结算完成"}
+                    {!canStartNext && (
+                      <span style={{ display: "block", color: "#f87171", fontSize: "11px", marginTop: "3px" }}>
+                        ⚠️ 当前在座玩家 ({seatedCount}/{state.config.minPlayers}人)，需至少 {state.config.minPlayers} 人在座才能开始下一手
+                      </span>
+                    )}
+                  </strong>
+                  {state.lastResult?.playerSettlements && state.lastResult.playerSettlements.length > 0 && (
+                    <div className="hand-settlement-grid">
+                      <div className="hand-settlement-header-row">
+                        <span>本手各玩家盈亏明细 ({state.lastResult.playerSettlements.length}人参与)</span>
+                        <small>投入 · 获得 · 净结果</small>
+                      </div>
+                      <div className="hand-settlement-cards">
+                        {state.lastResult.playerSettlements.map((p) => {
+                          const isHero = p.playerId === state.myId;
+                          const isWin = p.net > 0;
+                          const isLoss = p.net < 0;
+                          const toneClass = isWin ? "win" : isLoss ? "loss" : "even";
+                          return (
+                            <div key={p.playerId} className={`settlement-pill ${toneClass} ${isHero ? "is-hero" : ""}`}>
+                              <div className="settlement-pill-left">
+                                <span className="settlement-pill-tag">
+                                  {isWin ? "赢家" : p.folded ? "弃牌" : "跟注"}
+                                </span>
+                                <span className="settlement-pill-name" title={p.playerName}>
+                                  {p.playerName} {isHero && "(你)"}
+                                </span>
+                              </div>
+                              <div className="settlement-pill-right">
+                                <span className="settlement-pill-amount">
+                                  {isWin ? "+" : isLoss ? "−" : "±0"}{formatChips(Math.abs(p.net))}
+                                </span>
+                                <small className="settlement-pill-bb">
+                                  ({isWin ? "+" : isLoss ? "−" : ""}{(Math.abs(p.net) / state.bigBlind).toFixed(1)}BB)
+                                </small>
+                                <span className="settlement-pill-detail" title={`投入 ${formatChips(p.contributed)} · 获得 ${formatChips(p.received)}`}>
+                                  投{formatChips(p.contributed)}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div>
                   {state.isHost ? (
-                    <button className="primary-button" onClick={onNextHand}>
-                      开始下一手 <span>→</span>
+                    <button
+                      className="primary-button"
+                      onClick={onNextHand}
+                      disabled={!canStartNext}
+                      title={
+                        !canStartNext
+                          ? `当前在座人数 (${seatedCount}/${state.config.minPlayers})，至少需要 ${state.config.minPlayers} 人在座才能开始`
+                          : undefined
+                      }
+                    >
+                      {canStartNext ? (
+                        <>开始下一手 <span>→</span></>
+                      ) : (
+                        <>等待玩家入座 ({seatedCount}/${state.config.minPlayers}人) ⏳</>
+                      )}
                     </button>
                   ) : (
-                    <span className="empty-copy">等待房主开启下一手...</span>
+                    <span className="empty-copy">
+                      {canStartNext
+                        ? "等待房主开启下一手..."
+                        : `等待更多玩家入座 (${seatedCount}/${state.config.minPlayers}人)...`}
+                    </span>
                   )}
                 </div>
               </div>
@@ -465,7 +767,7 @@ export default function MultiplayerTable({
           <div
             className="panel-tabs"
             style={{
-              gridTemplateColumns: showEquityTab ? "repeat(3, 1fr)" : "repeat(2, 1fr)",
+              gridTemplateColumns: showEquityTab ? "repeat(4, 1fr)" : "repeat(3, 1fr)",
             }}
           >
             <button
@@ -473,6 +775,12 @@ export default function MultiplayerTable({
               onClick={() => setTab("timeline")}
             >
               行动
+            </button>
+            <button
+              className={tab === "tutorial" ? "active" : ""}
+              onClick={() => setTab("tutorial")}
+            >
+              教程
             </button>
             <button
               className={tab === "glossary" ? "active" : ""}
@@ -502,14 +810,46 @@ export default function MultiplayerTable({
                       <span>{STREET_LABELS[action.street]}</span>
                       <b>{action.playerName}</b>
                       <em>
-                        {ACTION_LABELS[action.type]}
-                        {action.amount > 0 ? ` ${formatChips(action.amount)}` : ""}
+                        <span>
+                          {ACTION_LABELS[action.type]}
+                          {action.amount > 0 ? ` ${formatChips(action.amount)}` : ""}
+                        </span>
+                        {action.thinkingText && (
+                          <span
+                            className={`action-thinking ${action.isDeepThinking ? "deep" : ""}`}
+                            title={action.isDeepThinking ? "思考时间超过单轮时间的一半" : undefined}
+                          >
+                            {action.thinkingText}
+                          </span>
+                        )}
                       </em>
                     </div>
                   ))
                 )}
+                {isHandComplete && state.lastResult && (
+                  <div className="timeline-settlement-card">
+                    <div className="timeline-settlement-header">
+                      <strong>🏆 本手结算</strong>
+                      <span>底池 {formatChips(state.lastResult.potTotal)}</span>
+                    </div>
+                    <p className="timeline-settlement-summary">{state.lastResult.summary}</p>
+                    {state.lastResult.playerSettlements && state.lastResult.playerSettlements.length > 0 && (
+                      <div className="timeline-settlement-list">
+                        {state.lastResult.playerSettlements.map((s) => (
+                          <div key={s.playerId} className={`timeline-settlement-item ${s.net > 0 ? "win" : s.net < 0 ? "loss" : "even"}`}>
+                            <span className="ts-name">{s.playerName}</span>
+                            <span className="ts-net">{s.net > 0 ? "+" : s.net < 0 ? "−" : "±0"}{formatChips(Math.abs(s.net))}</span>
+                            <small className="ts-detail">(投{formatChips(s.contributed)} 拿{formatChips(s.received)})</small>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
+
+            {tab === "tutorial" && <PokerTutorial />}
 
             {tab === "glossary" && (
               <div className="glossary">

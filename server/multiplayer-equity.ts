@@ -34,6 +34,7 @@ export function calculateGodModeEquities(
     playerName: c.playerName,
     seatIndex: c.seatIndex,
     equity: 0,
+    equityFormatted: "0.0%",
     handName: c.isFolded ? "已弃牌" : preflopHandDescription(c.holeCards),
     holeCards: c.holeCards,
     isFolded: c.isFolded,
@@ -47,6 +48,7 @@ export function calculateGodModeEquities(
     const single = result.find((item) => item.playerId === active[0].playerId);
     if (single) {
       single.equity = 1;
+      single.equityFormatted = "100.0%";
       if (community.length >= 3) {
         single.handName = evaluateSeven([...single.holeCards, ...community]).name;
       }
@@ -63,10 +65,29 @@ export function calculateGodModeEquities(
     }
   }
 
-  const knownCards: Card[] = [...community, ...active.flatMap((c) => c.holeCards)];
+  // Strictly exclude all cards dealt to ANY player (both active and folded)
+  // as well as all current board cards so folded cards never reappear.
+  const allDealtCards = contenders.flatMap((c) => c.holeCards);
+  const knownCards: Card[] = [...community, ...allDealtCards];
   const stubDeck = withoutCards(createDeck(), knownCards);
   const wins: Record<string, number> = {};
   for (const c of active) wins[c.playerId] = 0;
+
+  function finalizeEquities(total: number) {
+    for (const item of result) {
+      if (item.isFolded) {
+        item.equity = 0;
+        item.equityFormatted = "0.0%";
+      } else if (wins[item.playerId] !== undefined && total > 0) {
+        const raw = wins[item.playerId] / total;
+        item.equity = Math.round(raw * 1000) / 1000;
+        item.equityFormatted = `${(item.equity * 100).toFixed(1)}%`;
+      } else {
+        item.equity = 0;
+        item.equityFormatted = "0.0%";
+      }
+    }
+  }
 
   // Case 1: River or complete (5 board cards) -> exact evaluation
   if (community.length >= 5) {
@@ -81,15 +102,11 @@ export function calculateGodModeEquities(
     for (const t of tied) {
       wins[t.playerId] = splitEquity;
     }
-    for (const item of result) {
-      if (!item.isFolded && wins[item.playerId] !== undefined) {
-        item.equity = Math.round(wins[item.playerId] * 1000) / 1000;
-      }
-    }
+    finalizeEquities(1);
     return result;
   }
 
-  // Case 2: Turn (4 board cards) -> 1 card to come, exact loop over ~40 remaining cards
+  // Case 2: Turn (4 board cards) -> 1 card to come, exact loop over remaining stub deck
   if (community.length === 4) {
     const boardFour = community.slice(0, 4);
     let totalOutcomes = 0;
@@ -109,15 +126,11 @@ export function calculateGodModeEquities(
       }
       totalOutcomes += 1;
     }
-    for (const item of result) {
-      if (!item.isFolded && wins[item.playerId] !== undefined) {
-        item.equity = Math.round((wins[item.playerId] / totalOutcomes) * 1000) / 1000;
-      }
-    }
+    finalizeEquities(totalOutcomes);
     return result;
   }
 
-  // Case 3: Flop (3 board cards) -> 2 cards to come (~800 pairs), exact loop
+  // Case 3: Flop (3 board cards) -> 2 cards to come (~800 pairs), exact loop over stub deck
   if (community.length === 3) {
     const boardThree = community.slice(0, 3);
     let totalOutcomes = 0;
@@ -138,11 +151,7 @@ export function calculateGodModeEquities(
         totalOutcomes += 1;
       }
     }
-    for (const item of result) {
-      if (!item.isFolded && wins[item.playerId] !== undefined) {
-        item.equity = Math.round((wins[item.playerId] / totalOutcomes) * 1000) / 1000;
-      }
-    }
+    finalizeEquities(totalOutcomes);
     return result;
   }
 
@@ -152,7 +161,6 @@ export function calculateGodModeEquities(
   const cardsNeeded = 5 - community.length;
 
   for (let it = 0; it < totalIterations; it += 1) {
-    // Fast partial Fisher-Yates shuffle for cardsNeeded cards
     const sample = [...stubDeck];
     for (let i = 0; i < cardsNeeded; i += 1) {
       const swapIndex = i + Math.floor(Math.random() * (stubLength - i));
@@ -176,11 +184,6 @@ export function calculateGodModeEquities(
     }
   }
 
-  for (const item of result) {
-    if (!item.isFolded && wins[item.playerId] !== undefined) {
-      item.equity = Math.round((wins[item.playerId] / totalIterations) * 1000) / 1000;
-    }
-  }
-
+  finalizeEquities(totalIterations);
   return result;
 }

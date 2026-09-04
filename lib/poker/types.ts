@@ -41,6 +41,9 @@ export interface GameAction {
   street: Street;
   potBefore: number;
   timestamp: number;
+  thinkingSeconds?: number;
+  thinkingText?: string;
+  isDeepThinking?: boolean;
   decisionTrace?: DecisionTrace;
 }
 
@@ -94,6 +97,8 @@ export interface SeatState {
   acted: boolean;
   raiseLocked: boolean;
   lastAction?: LoggedActionType;
+  lastActionThinkingSeconds?: number;
+  lastActionThinkingText?: string;
   personality?: BotPersonality;
   stats: ObservedOpponentStats;
 }
@@ -108,6 +113,8 @@ export interface PublicSeatState {
   committedStreet: number;
   committedHand: number;
   lastAction?: LoggedActionType;
+  lastActionThinkingSeconds?: number;
+  lastActionThinkingText?: string;
   position: string;
   stats: ObservedOpponentStats;
 }
@@ -116,6 +123,16 @@ export interface PotAward {
   amount: number;
   winnerIds: string[];
   label: string;
+}
+
+export interface PlayerSettlement {
+  playerId: string;
+  playerName: string;
+  contributed: number;
+  received: number;
+  net: number;
+  isWinner: boolean;
+  folded: boolean;
 }
 
 export interface WinnerSettlement {
@@ -131,6 +148,7 @@ export interface HandResult {
   awards: PotAward[];
   winnerIds: string[];
   winnerSettlements: WinnerSettlement[];
+  playerSettlements: PlayerSettlement[];
   summary: string;
   showdown: boolean;
 }
