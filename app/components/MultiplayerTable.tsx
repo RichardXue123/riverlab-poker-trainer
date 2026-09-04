@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { RANK_SYMBOL, SUIT_SYMBOL } from "@/lib/poker/cards";
 import { GLOSSARY } from "@/lib/poker/coach";
 import { ACTION_LABELS, STREET_LABELS } from "@/lib/poker/engine";
@@ -29,6 +29,10 @@ interface MultiplayerTableProps {
   onTransferHost?: (targetPlayerId: string) => void;
   onTakeSeat?: (seatIndex: number) => void;
   onStandUp?: () => void;
+  onAddAiBot?: (seatIndex?: number) => void;
+  onRemoveAiBot?: (seatIndex: number) => void;
+  onFillAiBots?: (targetCount?: number) => void;
+  onClearAiBots?: () => void;
 }
 
 type MpPanelTab = "timeline" | "tutorial" | "glossary" | "equity";
@@ -74,6 +78,10 @@ export default function MultiplayerTable({
   onTransferHost,
   onTakeSeat,
   onStandUp,
+  onAddAiBot,
+  onRemoveAiBot,
+  onFillAiBots,
+  onClearAiBots,
 }: MultiplayerTableProps) {
   const [tab, setTab] = useState<MpPanelTab>("timeline");
 
@@ -192,6 +200,17 @@ export default function MultiplayerTable({
               style={state.godMode ? { color: "var(--gold-light)", borderColor: "var(--gold)" } : undefined}
             >
               {state.godMode ? "👁️ 上帝视角: 开启" : "👁️ 开启上帝视角"}
+            </button>
+          )}
+          {isWaitingForHost && state.isHost && seatedCount < state.config.minPlayers && onFillAiBots && (
+            <button
+              type="button"
+              className="table-quick-sit-btn"
+              style={{ color: "#93c5fd", borderColor: "rgba(59, 130, 246, 0.4)" }}
+              onClick={() => onFillAiBots(state.config.minPlayers)}
+              title={`一键添加 AI 补齐至 ${state.config.minPlayers} 人`}
+            >
+              🤖 补齐 AI ({seatedCount}/{state.config.minPlayers})
             </button>
           )}
           {isWaitingForHost && state.isSpectator && onTakeSeat && seatedCount < 8 && (
@@ -324,6 +343,17 @@ export default function MultiplayerTable({
                           💺 入座此位
                         </button>
                       )}
+                      {state.isHost && onAddAiBot && (
+                        <button
+                          type="button"
+                          className="seat-take-btn seat-add-ai-btn"
+                          onClick={() => onAddAiBot(index)}
+                          title={`在座位 ${index + 1} 添加 AI 机器人`}
+                          style={{ marginTop: "4px", background: "rgba(59, 130, 246, 0.2)", borderColor: "rgba(59, 130, 246, 0.4)", color: "#93c5fd" }}
+                        >
+                          🤖 添加 AI
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -402,13 +432,30 @@ export default function MultiplayerTable({
                     {seat.position && <span className="seat-position">{seat.position}</span>}
                     <b>
                       {seat.isHost && <span title="当前房主">👑 </span>}
+                      {seat.isAi && <span className="seat-ai-tag" title="AI 机器人" style={{ color: "#60a5fa", marginRight: "3px" }}>🤖</span>}
                       {seat.name} {isHero && "(你)"}
                     </b>
                     <strong>
                       {formatChips(seat.stack)}{" "}
                       <small>{(seat.stack / state.bigBlind).toFixed(0)}BB</small>
                     </strong>
-                    {state.isHost && !isHero && onTransferHost && (
+                    {state.isHost && seat.isAi && isWaitingForHost && onRemoveAiBot && (
+                      <button
+                        type="button"
+                        className="seat-remove-ai-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm(`确认移除 AI「${seat.name}」吗？`)) {
+                            onRemoveAiBot(index);
+                          }
+                        }}
+                        title="移除该 AI 机器人"
+                        style={{ marginTop: "4px", background: "rgba(239, 68, 68, 0.2)", borderColor: "rgba(239, 68, 68, 0.4)", color: "#f87171", fontSize: "11px", padding: "2px 6px", borderRadius: "4px", cursor: "pointer" }}
+                      >
+                        ✕ 移除 AI
+                      </button>
+                    )}
+                    {state.isHost && !isHero && !seat.isAi && onTransferHost && (
                       <button
                         type="button"
                         className="seat-transfer-host-btn"
@@ -538,22 +585,35 @@ export default function MultiplayerTable({
                 </div>
                 <div>
                   {state.isHost ? (
-                    <button
-                      className="primary-button"
-                      onClick={onNextHand}
-                      disabled={!canStartNext}
-                      title={
-                        !canStartNext
-                          ? `当前在座人数 (${seatedCount}/${state.config.minPlayers})，至少需要 ${state.config.minPlayers} 人在座才能开始`
-                          : undefined
-                      }
-                    >
-                      {canStartNext ? (
-                        <>开始第一手 <span>🚀</span></>
-                      ) : (
-                        <>等待玩家入座 ({seatedCount}/${state.config.minPlayers}人) ⏳</>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "center" }}>
+                      <button
+                        className="primary-button"
+                        onClick={onNextHand}
+                        disabled={!canStartNext}
+                        title={
+                          !canStartNext
+                            ? `当前在座人数 (${seatedCount}/${state.config.minPlayers})，至少需要 ${state.config.minPlayers} 人在座才能开始`
+                            : undefined
+                        }
+                      >
+                        {canStartNext ? (
+                          <>开始第一手 <span>🚀</span></>
+                        ) : (
+                          <>等待玩家入座 ({seatedCount}/${state.config.minPlayers}人) ⏳</>
+                        )}
+                      </button>
+                      {!canStartNext && onFillAiBots && (
+                        <button
+                          type="button"
+                          className="primary-button"
+                          style={{ background: "linear-gradient(135deg, #2563eb, #1d4ed8)", boxShadow: "0 0 12px rgba(37,99,235,0.4)" }}
+                          onClick={() => onFillAiBots(state.config.minPlayers)}
+                          title={`一键添加 AI 补齐至 ${state.config.minPlayers} 人开局`}
+                        >
+                          🤖 一键补齐 AI ({seatedCount}/{state.config.minPlayers}人)
+                        </button>
                       )}
-                    </button>
+                    </div>
                   ) : (
                     <span className="empty-copy">
                       {canStartNext
@@ -617,22 +677,35 @@ export default function MultiplayerTable({
                 </div>
                 <div>
                   {state.isHost ? (
-                    <button
-                      className="primary-button"
-                      onClick={onNextHand}
-                      disabled={!canStartNext}
-                      title={
-                        !canStartNext
-                          ? `当前在座人数 (${seatedCount}/${state.config.minPlayers})，至少需要 ${state.config.minPlayers} 人在座才能开始`
-                          : undefined
-                      }
-                    >
-                      {canStartNext ? (
-                        <>开始下一手 <span>→</span></>
-                      ) : (
-                        <>等待玩家入座 ({seatedCount}/${state.config.minPlayers}人) ⏳</>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "center" }}>
+                      <button
+                        className="primary-button"
+                        onClick={onNextHand}
+                        disabled={!canStartNext}
+                        title={
+                          !canStartNext
+                            ? `当前在座人数 (${seatedCount}/${state.config.minPlayers})，至少需要 ${state.config.minPlayers} 人在座才能开始`
+                            : undefined
+                        }
+                      >
+                        {canStartNext ? (
+                          <>开始下一手 <span>→</span></>
+                        ) : (
+                          <>等待玩家入座 ({seatedCount}/${state.config.minPlayers}人) ⏳</>
+                        )}
+                      </button>
+                      {!canStartNext && onFillAiBots && (
+                        <button
+                          type="button"
+                          className="primary-button"
+                          style={{ background: "linear-gradient(135deg, #2563eb, #1d4ed8)", boxShadow: "0 0 12px rgba(37,99,235,0.4)" }}
+                          onClick={() => onFillAiBots(state.config.minPlayers)}
+                          title={`一键添加 AI 补齐至 ${state.config.minPlayers} 人`}
+                        >
+                          🤖 一键补齐 AI ({seatedCount}/{state.config.minPlayers}人)
+                        </button>
                       )}
-                    </button>
+                    </div>
                   ) : (
                     <span className="empty-copy">
                       {canStartNext
@@ -801,31 +874,143 @@ export default function MultiplayerTable({
           <div className="panel-content">
             {tab === "timeline" && (
               <div className="timeline">
+                <div className="timeline-stage-header">
+                  <div className="tsh-main">
+                    <div className="tsh-title-row">
+                      <span className="tsh-label">当前牌局阶段</span>
+                      {!isHandComplete && !isFirstHandPending && (
+                        <span className="tsh-live-indicator">
+                          <span className="tsh-pulse-dot" /> 进行中
+                        </span>
+                      )}
+                      {isHandComplete && (
+                        <span className="tsh-complete-indicator">已结束</span>
+                      )}
+                    </div>
+                    <strong className={`tsh-stage-badge street-${state.street}`}>
+                      {isFirstHandPending ? "准备就绪 Ready" : STREET_LABELS[state.street]}
+                    </strong>
+                  </div>
+                  {state.community.length > 0 && (
+                    <div className="tsh-board">
+                      <span className="tsh-board-label">当前公共牌 ({state.community.length}张)</span>
+                      <div className="tsh-board-cards">
+                        {state.community.map((card, i) => (
+                          <CardFace key={i} card={card} small />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <h3>行动时间线</h3>
                 {state.actionLog.length === 0 ? (
                   <p className="empty-copy">本手牌局刚开始，暂无公开行动。</p>
                 ) : (
-                  state.actionLog.map((action) => (
-                    <div key={action.index}>
-                      <span>{STREET_LABELS[action.street]}</span>
-                      <b>{action.playerName}</b>
-                      <em>
-                        <span>
-                          {ACTION_LABELS[action.type]}
-                          {action.amount > 0 ? ` ${formatChips(action.amount)}` : ""}
-                        </span>
-                        {action.thinkingText && (
-                          <span
-                            className={`action-thinking ${action.isDeepThinking ? "deep" : ""}`}
-                            title={action.isDeepThinking ? "思考时间超过单轮时间的一半" : undefined}
-                          >
-                            {action.thinkingText}
-                          </span>
+                  state.actionLog.map((action, idx) => {
+                    const isNewStreet = idx === 0 || action.street !== state.actionLog[idx - 1].street;
+                    return (
+                      <Fragment key={action.index}>
+                        {isNewStreet && (
+                          <div className={`timeline-street-divider street-${action.street}`}>
+                            <div className="timeline-street-divider-line" />
+                            <div className="timeline-street-divider-pill">
+                              <span className="divider-street-icon">
+                                {action.street === "preflop" ? "🃏" : action.street === "flop" ? "🎴" : action.street === "turn" ? "⚡" : action.street === "river" ? "🌊" : "🏆"}
+                              </span>
+                              <span className="divider-street-name">{STREET_LABELS[action.street]}</span>
+                              {action.street === "flop" && state.community.length >= 3 && (
+                                <span className="divider-street-cards">
+                                  {state.community.slice(0, 3).map((c, i) => (
+                                    <CardFace key={i} card={c} small />
+                                  ))}
+                                </span>
+                              )}
+                              {action.street === "turn" && state.community.length >= 4 && (
+                                <span className="divider-street-cards">
+                                  <CardFace card={state.community[3]} small />
+                                </span>
+                              )}
+                              {action.street === "river" && state.community.length >= 5 && (
+                                <span className="divider-street-cards">
+                                  <CardFace card={state.community[4]} small />
+                                </span>
+                              )}
+                            </div>
+                            <div className="timeline-street-divider-line" />
+                          </div>
                         )}
-                      </em>
-                    </div>
-                  ))
+                        <div className={`timeline-action-row street-${action.street}`}>
+                          <span className="action-street-badge">{STREET_LABELS[action.street]}</span>
+                          <b className="action-player-name">{action.playerName}</b>
+                          <em className="action-detail">
+                            <span className="action-type-amount">
+                              {ACTION_LABELS[action.type]}
+                              {action.amount > 0 ? ` ${formatChips(action.amount)}` : ""}
+                            </span>
+                            {action.thinkingText && (
+                              <span
+                                className={`action-thinking ${action.isDeepThinking ? "deep" : ""}`}
+                                title={action.isDeepThinking ? "思考时间超过单轮时间的一半" : undefined}
+                              >
+                                {action.thinkingText}
+                              </span>
+                            )}
+                          </em>
+                        </div>
+                      </Fragment>
+                    );
+                  })
                 )}
+
+                {!isHandComplete && !isFirstHandPending && state.street !== "complete" && state.street !== "showdown" && (
+                  state.actionLog.length === 0 || state.actionLog[state.actionLog.length - 1].street !== state.street
+                ) && (
+                  <div className={`timeline-street-divider current-ongoing street-${state.street}`}>
+                    <div className="timeline-street-divider-line" />
+                    <div className="timeline-street-divider-pill current">
+                      <span className="divider-street-icon">
+                        {state.street === "preflop" ? "🃏" : state.street === "flop" ? "🎴" : state.street === "turn" ? "⚡" : "🌊"}
+                      </span>
+                      <span className="divider-street-name">
+                        <span className="tsh-pulse-dot" />
+                        {STREET_LABELS[state.street]} (当前进行中)
+                      </span>
+                      {state.street === "flop" && state.community.length >= 3 && (
+                        <span className="divider-street-cards">
+                          {state.community.slice(0, 3).map((c, i) => (
+                            <CardFace key={i} card={c} small />
+                          ))}
+                        </span>
+                      )}
+                      {state.street === "turn" && state.community.length >= 4 && (
+                        <span className="divider-street-cards">
+                          <CardFace card={state.community[3]} small />
+                        </span>
+                      )}
+                      {state.street === "river" && state.community.length >= 5 && (
+                        <span className="divider-street-cards">
+                          <CardFace card={state.community[4]} small />
+                        </span>
+                      )}
+                    </div>
+                    <div className="timeline-street-divider-line" />
+                  </div>
+                )}
+
+                {isHandComplete && (
+                  <div className="timeline-street-divider street-complete">
+                    <div className="timeline-street-divider-line" />
+                    <div className="timeline-street-divider-pill complete">
+                      <span className="divider-street-icon">🏁</span>
+                      <span className="divider-street-name">
+                        {state.street === "showdown" ? STREET_LABELS.showdown : STREET_LABELS.complete}
+                      </span>
+                    </div>
+                    <div className="timeline-street-divider-line" />
+                  </div>
+                )}
+
                 {isHandComplete && state.lastResult && (
                   <div className="timeline-settlement-card">
                     <div className="timeline-settlement-header">

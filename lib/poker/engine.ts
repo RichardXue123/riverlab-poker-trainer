@@ -569,10 +569,10 @@ export const ACTION_LABELS: Record<LoggedActionType, string> = {
 };
 
 export const STREET_LABELS: Record<Street, string> = {
-  preflop: "翻前",
-  flop: "翻牌",
-  turn: "转牌",
-  river: "河牌",
-  showdown: "摊牌",
-  complete: "本手结束",
+  preflop: "翻牌前 Pre-flop",
+  flop: "翻牌圈 Flop",
+  turn: "转牌圈 Turn",
+  river: "河牌圈 River",
+  showdown: "摊牌 Showdown",
+  complete: "牌局结算 Complete",
 };

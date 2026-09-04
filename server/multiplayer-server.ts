@@ -274,6 +274,46 @@ export class MultiplayerServer {
         }
         break;
       }
+      case "ADD_AI_BOT": {
+        const room = this.getRoomForSession(session);
+        if (room) {
+          const res = room.addAiBot(session.id, msg.seatIndex);
+          if (!res.success && res.error) {
+            this.send(ws, { type: "ERROR", message: res.error });
+          }
+        }
+        break;
+      }
+      case "REMOVE_AI_BOT": {
+        const room = this.getRoomForSession(session);
+        if (room) {
+          const res = room.removeAiBot(session.id, msg.seatIndex);
+          if (!res.success && res.error) {
+            this.send(ws, { type: "ERROR", message: res.error });
+          }
+        }
+        break;
+      }
+      case "FILL_AI_BOTS": {
+        const room = this.getRoomForSession(session);
+        if (room) {
+          const res = room.fillAiBots(session.id, msg.targetCount);
+          if (!res.success && res.error) {
+            this.send(ws, { type: "ERROR", message: res.error });
+          }
+        }
+        break;
+      }
+      case "CLEAR_AI_BOTS": {
+        const room = this.getRoomForSession(session);
+        if (room) {
+          const res = room.clearAllAiBots(session.id);
+          if (!res.success && res.error) {
+            this.send(ws, { type: "ERROR", message: res.error });
+          }
+        }
+        break;
+      }
     }
   }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createSeatRoster, chooseBotAction, driftBotsForNextHand } from "@/lib/poker/ai";
 import { RANK_SYMBOL, SUIT_SYMBOL } from "@/lib/poker/cards";
 import { buildCoachAdvice, createHandReview, GLOSSARY, rateDecision } from "@/lib/poker/coach";
@@ -682,24 +682,143 @@ function SidePanel({
         {tab === "coach" && mode === "teaching" && !review && advice && <CoachCard advice={advice} />}
         {tab === "timeline" && (
           <div className="timeline">
-            <h3>行动时间线</h3>
-            {table.actionLog.map((action) => (
-              <div key={action.index}>
-                <span>{STREET_LABELS[action.street]}</span>
-                <b>{action.playerName}</b>
-                <em>
-                  <span>{ACTION_LABELS[action.type]}{action.amount > 0 ? ` ${formatChips(action.amount)}` : ""}</span>
-                  {action.thinkingText && (
-                    <span
-                      className={`action-thinking ${action.isDeepThinking ? "deep" : ""}`}
-                      title={action.isDeepThinking ? "思考时间超过单轮时间的一半" : undefined}
-                    >
-                      {action.thinkingText}
+            <div className="timeline-stage-header">
+              <div className="tsh-main">
+                <div className="tsh-title-row">
+                  <span className="tsh-label">当前牌局阶段</span>
+                  {table.status !== "complete" && (
+                    <span className="tsh-live-indicator">
+                      <span className="tsh-pulse-dot" /> 进行中
                     </span>
                   )}
-                </em>
+                  {table.status === "complete" && (
+                    <span className="tsh-complete-indicator">已结束</span>
+                  )}
+                </div>
+                <strong className={`tsh-stage-badge street-${table.street}`}>
+                  {STREET_LABELS[table.street]}
+                </strong>
               </div>
-            ))}
+              {table.community.length > 0 && (
+                <div className="tsh-board">
+                  <span className="tsh-board-label">当前公共牌 ({table.community.length}张)</span>
+                  <div className="tsh-board-cards">
+                    {table.community.map((card, i) => (
+                      <CardFace key={i} card={card} small />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <h3>行动时间线</h3>
+            {table.actionLog.length === 0 ? (
+              <p className="empty-copy">本手牌局刚开始，暂无公开行动。</p>
+            ) : (
+              table.actionLog.map((action, idx) => {
+                const isNewStreet = idx === 0 || action.street !== table.actionLog[idx - 1].street;
+                return (
+                  <Fragment key={action.index}>
+                    {isNewStreet && (
+                      <div className={`timeline-street-divider street-${action.street}`}>
+                        <div className="timeline-street-divider-line" />
+                        <div className="timeline-street-divider-pill">
+                          <span className="divider-street-icon">
+                            {action.street === "preflop" ? "🃏" : action.street === "flop" ? "🎴" : action.street === "turn" ? "⚡" : action.street === "river" ? "🌊" : "🏆"}
+                          </span>
+                          <span className="divider-street-name">{STREET_LABELS[action.street]}</span>
+                          {action.street === "flop" && table.community.length >= 3 && (
+                            <span className="divider-street-cards">
+                              {table.community.slice(0, 3).map((c, i) => (
+                                <CardFace key={i} card={c} small />
+                              ))}
+                            </span>
+                          )}
+                          {action.street === "turn" && table.community.length >= 4 && (
+                            <span className="divider-street-cards">
+                              <CardFace card={table.community[3]} small />
+                            </span>
+                          )}
+                          {action.street === "river" && table.community.length >= 5 && (
+                            <span className="divider-street-cards">
+                              <CardFace card={table.community[4]} small />
+                            </span>
+                          )}
+                        </div>
+                        <div className="timeline-street-divider-line" />
+                      </div>
+                    )}
+                    <div className={`timeline-action-row street-${action.street}`}>
+                      <span className="action-street-badge">{STREET_LABELS[action.street]}</span>
+                      <b className="action-player-name">{action.playerName}</b>
+                      <em className="action-detail">
+                        <span className="action-type-amount">
+                          {ACTION_LABELS[action.type]}
+                          {action.amount > 0 ? ` ${formatChips(action.amount)}` : ""}
+                        </span>
+                        {action.thinkingText && (
+                          <span
+                            className={`action-thinking ${action.isDeepThinking ? "deep" : ""}`}
+                            title={action.isDeepThinking ? "思考时间超过单轮时间的一半" : undefined}
+                          >
+                            {action.thinkingText}
+                          </span>
+                        )}
+                      </em>
+                    </div>
+                  </Fragment>
+                );
+              })
+            )}
+
+            {table.status !== "complete" && table.street !== "complete" && table.street !== "showdown" && (
+              table.actionLog.length === 0 || table.actionLog[table.actionLog.length - 1].street !== table.street
+            ) && (
+              <div className={`timeline-street-divider current-ongoing street-${table.street}`}>
+                <div className="timeline-street-divider-line" />
+                <div className="timeline-street-divider-pill current">
+                  <span className="divider-street-icon">
+                    {table.street === "preflop" ? "🃏" : table.street === "flop" ? "🎴" : table.street === "turn" ? "⚡" : "🌊"}
+                  </span>
+                  <span className="divider-street-name">
+                    <span className="tsh-pulse-dot" />
+                    {STREET_LABELS[table.street]} (当前进行中)
+                  </span>
+                  {table.street === "flop" && table.community.length >= 3 && (
+                    <span className="divider-street-cards">
+                      {table.community.slice(0, 3).map((c, i) => (
+                        <CardFace key={i} card={c} small />
+                      ))}
+                    </span>
+                  )}
+                  {table.street === "turn" && table.community.length >= 4 && (
+                    <span className="divider-street-cards">
+                      <CardFace card={table.community[3]} small />
+                    </span>
+                  )}
+                  {table.street === "river" && table.community.length >= 5 && (
+                    <span className="divider-street-cards">
+                      <CardFace card={table.community[4]} small />
+                    </span>
+                  )}
+                </div>
+                <div className="timeline-street-divider-line" />
+              </div>
+            )}
+
+            {table.status === "complete" && (
+              <div className="timeline-street-divider street-complete">
+                <div className="timeline-street-divider-line" />
+                <div className="timeline-street-divider-pill complete">
+                  <span className="divider-street-icon">🏁</span>
+                  <span className="divider-street-name">
+                    {table.street === "showdown" ? STREET_LABELS.showdown : STREET_LABELS.complete}
+                  </span>
+                </div>
+                <div className="timeline-street-divider-line" />
+              </div>
+            )}
+
             {table.status === "complete" && table.lastResult && (
               <div className="timeline-settlement-card">
                 <div className="timeline-settlement-header">
@@ -1497,6 +1616,10 @@ export default function PokerTrainer() {
           onTransferHost={(targetPlayerId) => sendMp({ type: "TRANSFER_HOST", targetPlayerId })}
           onTakeSeat={(seatIndex) => sendMp({ type: "TAKE_SEAT", seatIndex })}
           onStandUp={() => sendMp({ type: "STAND_UP" })}
+          onAddAiBot={(seatIndex) => sendMp({ type: "ADD_AI_BOT", seatIndex })}
+          onRemoveAiBot={(seatIndex) => sendMp({ type: "REMOVE_AI_BOT", seatIndex })}
+          onFillAiBots={(targetCount) => sendMp({ type: "FILL_AI_BOTS", targetCount })}
+          onClearAiBots={() => sendMp({ type: "CLEAR_AI_BOTS" })}
         />
       );
     }
@@ -1541,6 +1664,10 @@ export default function PokerTrainer() {
           onStartGame={() => sendMp({ type: "START_GAME" })}
           onRefreshRooms={() => sendMp({ type: "LIST_ROOMS" })}
           onTransferHost={(targetPlayerId) => sendMp({ type: "TRANSFER_HOST", targetPlayerId })}
+          onAddAiBot={(seatIndex) => sendMp({ type: "ADD_AI_BOT", seatIndex })}
+          onRemoveAiBot={(seatIndex) => sendMp({ type: "REMOVE_AI_BOT", seatIndex })}
+          onFillAiBots={(targetCount) => sendMp({ type: "FILL_AI_BOTS", targetCount })}
+          onClearAiBots={() => sendMp({ type: "CLEAR_AI_BOTS" })}
           initialRoomCode={initialRoomCode}
         />
       </div>

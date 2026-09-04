@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getLegalActions } from "../lib/poker/engine";
+import { getLegalActions, STREET_LABELS } from "../lib/poker/engine";
 import { MultiplayerRoom } from "../server/multiplayer-room";
 
 test("enforces 4-8 players and all-ready rule before starting game", () => {
@@ -542,5 +542,180 @@ test("accurately logs thinking time and deep thinking formatting in multiplayer 
   room.cleanup();
 });
 
+test("supports adding, removing, and auto-filling AI bots to meet 4-8 players rule", () => {
+  const room = new MultiplayerRoom("BOTS", "host-1", "房主", () => {}, {
+    minPlayers: 4,
+    aiDelayMs: -1,
+  });
 
+  // Initially only 1 host player
+  assert.equal(room.seatedCount, 1);
+  assert.equal(room.checkStartGameEligibility().canStart, false);
 
+  // Non-host cannot add AI bot
+  const nonHostAdd = room.addAiBot("p2");
+  assert.equal(nonHostAdd.success, false);
+  assert.equal(nonHostAdd.error, "只有房主才能添加 AI 机器人");
+
+  // Host adds 1 AI bot to seat 1
+  const add1 = room.addAiBot("host-1", 1);
+  assert.equal(add1.success, true);
+  assert.equal(room.seatedCount, 2);
+  const botSeat1 = room.seats[1];
+  assert.ok(botSeat1);
+  assert.equal(botSeat1.isAi, true);
+  assert.equal(botSeat1.isReady, true);
+  assert.ok(botSeat1.name.length > 0);
+
+  // Host removes AI bot from seat 1
+  const remove1 = room.removeAiBot("host-1", 1);
+  assert.equal(remove1.success, true);
+  assert.equal(room.seats[1], null);
+  assert.equal(room.seatedCount, 1);
+
+  // Cannot remove empty seat or human seat
+  const removeEmpty = room.removeAiBot("host-1", 1);
+  assert.equal(removeEmpty.success, false);
+  const removeHost = room.removeAiBot("host-1", 0);
+  assert.equal(removeHost.success, false);
+  assert.equal(removeHost.error, "该座位没有 AI 机器人");
+
+  // Host uses fillAiBots to automatically reach minPlayers (4)
+  const fillRes = room.fillAiBots("host-1", 4);
+  assert.equal(fillRes.success, true);
+  assert.equal(fillRes.countAdded, 3);
+  assert.equal(room.seatedCount, 4);
+
+  // Check start game eligibility now satisfies 4 players and all ready
+  const eligibility = room.checkStartGameEligibility();
+  assert.equal(eligibility.canStart, true);
+
+  // Client state reflects AI properties
+  const clientState = room.buildClientState("host-1");
+  const aiSeats = clientState.seats.filter((s) => s.isAi);
+  assert.equal(aiSeats.length, 3);
+  for (const bot of aiSeats) {
+    assert.equal(bot.isHuman, false);
+    assert.equal(bot.isReady, true);
+    assert.equal(bot.holeCards.length, 0); // Cards masked for host
+  }
+
+  // Host fills to 8 seats
+  const fill8 = room.fillAiBots("host-1", 8);
+  assert.equal(fill8.success, true);
+  assert.equal(fill8.countAdded, 4);
+  assert.equal(room.seatedCount, 8);
+
+  // Cannot add beyond 8
+  const addOver = room.addAiBot("host-1");
+  assert.equal(addOver.success, false);
+  assert.ok(addOver.error?.includes("8人上限"));
+
+  // Clear all AI bots
+  const clearRes = room.clearAllAiBots("host-1");
+  assert.equal(clearRes.success, true);
+  assert.equal(clearRes.countRemoved, 7);
+  assert.equal(room.seatedCount, 1);
+
+  room.cleanup();
+});
+
+test("executes AI bot actions authority on server during multiplayer game", () => {
+  const room = new MultiplayerRoom("BOTPLAY", "host-1", "房主", () => {}, {
+    minPlayers: 4,
+    aiDelayMs: -1, // Manual step execution for testing
+  });
+
+  // Host fills 3 AI bots to meet 4 players
+  room.fillAiBots("host-1", 4);
+  assert.equal(room.checkStartGameEligibility().canStart, true);
+
+  // Host starts game and first hand
+  const started = room.startGame("host-1");
+  assert.equal(started.success, true);
+  const firstHand = room.nextHand("host-1");
+  assert.equal(firstHand.success, true);
+
+  assert.equal(room.gameState?.status, "playing");
+
+  // Play through the hand until complete or user turn
+  // If active player is human host, host checks or calls or folds
+  let iterations = 0;
+  while (room.gameState && room.gameState.status === "playing" && iterations < 50) {
+    iterations++;
+    const activeSeat = room.gameState.seats[room.gameState.activeIndex];
+    if (!activeSeat) break;
+
+    if (activeSeat.id === "host-1") {
+      // Human turn: check or call
+      const legal = getLegalActions(room.gameState, "host-1");
+      if (legal.canCheck) {
+        room.handleAction("host-1", { type: "check" });
+      } else if (legal.canCall) {
+        room.handleAction("host-1", { type: "call" });
+      } else {
+        room.handleAction("host-1", { type: "fold" });
+      }
+    } else {
+      // AI turn: manual step execution
+      if (room.gameState.status === "playing" && !activeSeat.isHuman) {
+        room.executeAiTurn(activeSeat.id);
+      }
+    }
+  }
+
+  // Verify that actions took place and actionLog contains AI entries
+  assert.ok(room.gameState!.actionLog.length > 0);
+  const hasAiAction = room.gameState!.actionLog.some((a) => a.playerId !== "host-1");
+  assert.equal(hasAiAction, true, "AI players should have taken valid actions in actionLog");
+
+  // Check that thinking seconds are formatted on voluntary actions
+  const aiLog = room.gameState!.actionLog.find((a) => a.playerId !== "host-1" && a.thinkingText);
+  assert.ok(aiLog?.thinkingText?.startsWith("已"));
+
+  // Cannot transfer host to AI
+  const botSeat = room.seats.find((s) => s?.isAi);
+  assert.ok(botSeat);
+  const transferRes = room.transferHost("host-1", botSeat.id);
+  assert.equal(transferRes.success, false);
+  assert.equal(transferRes.error, "无法将房主身份转让给 AI 机器人");
+
+  // If host leaves and only bots remain, room cleans up
+  const roomEmpty = room.leave("host-1");
+  assert.equal(roomEmpty, true, "Room with only AI bots remaining should be cleaned up");
+
+  room.cleanup();
+});
+
+test("bilingual stage labels are correctly formatted and map across all hand streets", () => {
+  assert.equal(STREET_LABELS.preflop, "翻牌前 Pre-flop");
+  assert.equal(STREET_LABELS.flop, "翻牌圈 Flop");
+  assert.equal(STREET_LABELS.turn, "转牌圈 Turn");
+  assert.equal(STREET_LABELS.river, "河牌圈 River");
+  assert.equal(STREET_LABELS.showdown, "摊牌 Showdown");
+  assert.equal(STREET_LABELS.complete, "牌局结算 Complete");
+
+  const room = new MultiplayerRoom("STAGE1", "host-1", "StageHost", () => {}, {
+    smallBlind: 10,
+    bigBlind: 20,
+    minPlayers: 4,
+    aiDelayMs: -1,
+  });
+
+  room.fillAiBots("host-1", 4);
+  const started = room.startGame("host-1");
+  assert.equal(started.success, true);
+  const firstHand = room.nextHand("host-1");
+  assert.equal(firstHand.success, true);
+
+  const clientState = room.buildClientState("host-1");
+  assert.equal(clientState.street, "preflop");
+  assert.equal(STREET_LABELS[clientState.street], "翻牌前 Pre-flop");
+  assert.ok(clientState.actionLog.length >= 2); // Blinds posted
+  for (const action of clientState.actionLog) {
+    assert.ok(STREET_LABELS[action.street]);
+    assert.equal(action.street, "preflop");
+  }
+
+  room.cleanup();
+});

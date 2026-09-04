@@ -8,6 +8,7 @@ export interface RoomConfig {
   regularTurnSeconds: number; // 常规单步思考时间 (秒)，例如 15, 20, 30
   initialTimeBankCards: number; // 每位玩家拥有的延时卡数量，例如 1, 2, 3
   timeBankExtensionSeconds: number; // 每次延长思考时间 (30秒)
+  aiDelayMs?: number; // AI 思考延迟毫秒数 (可选，默认 1000ms，测试时可设为 0)
 }
 
 export interface RoomMember {
@@ -22,6 +23,7 @@ export interface RoomSeatPlayer extends RoomMember {
   isReady: boolean;
   isHost: boolean;
   timeBankCards: number;
+  isAi?: boolean;
 }
 
 export interface RoomSpectator extends RoomMember {
@@ -46,6 +48,7 @@ export interface MultiplayerPublicSeat extends PublicSeatState {
   isHost: boolean;
   connected: boolean;
   timeBankCards: number;
+  isAi?: boolean;
 }
 
 export interface MultiplayerTableState {
@@ -110,7 +113,11 @@ export type ClientMessage =
   | { type: "NEXT_HAND" }
   | { type: "REBUY"; amount?: number }
   | { type: "TOGGLE_GOD_MODE"; enabled: boolean }
-  | { type: "TRANSFER_HOST"; targetPlayerId: string };
+  | { type: "TRANSFER_HOST"; targetPlayerId: string }
+  | { type: "ADD_AI_BOT"; seatIndex?: number }
+  | { type: "REMOVE_AI_BOT"; seatIndex: number }
+  | { type: "FILL_AI_BOTS"; targetCount?: number }
+  | { type: "CLEAR_AI_BOTS" };
 
 export type ServerMessage =
   | { type: "PONG" }

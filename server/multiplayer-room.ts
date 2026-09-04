@@ -1,5 +1,7 @@
+import { BOT_NAMES, chooseBotAction, createBotPersonality } from "../lib/poker/ai";
 import {
   applyAction,
+  buildBotView,
   createTable,
   getLegalActions,
   getPosition,
@@ -34,6 +36,7 @@ export class MultiplayerRoom {
 
   public turnStartedAt = 0;
   private turnTimer: NodeJS.Timeout | null = null;
+  private aiTimer: NodeJS.Timeout | null = null;
   private turnExpiresAt = 0;
   private turnTotalTime = 20;
   private autoNextHandTimer: NodeJS.Timeout | null = null;
@@ -59,6 +62,7 @@ export class MultiplayerRoom {
       regularTurnSeconds: regSeconds,
       initialTimeBankCards: config?.initialTimeBankCards ?? 2,
       timeBankExtensionSeconds: regSeconds, // 延时卡增加长度等于单次常规思考时间的一倍
+      aiDelayMs: config?.aiDelayMs,
     };
     this.turnTotalTime = regSeconds;
 
@@ -172,28 +176,28 @@ export class MultiplayerRoom {
 
     this.spectators.delete(clientId);
 
-    // If room is empty, return true to signal cleanup
-    const remainingSeated = this.seats.filter((s): s is RoomSeatPlayer => s !== null);
+    // If room has no human players and no spectators, return true to signal cleanup
+    const remainingHumans = this.seats.filter((s): s is RoomSeatPlayer => s !== null && !s.isAi);
     const remainingSpectators = Array.from(this.spectators.values());
-    if (remainingSeated.length === 0 && remainingSpectators.length === 0) {
+    if (remainingHumans.length === 0 && remainingSpectators.length === 0) {
       this.cleanup();
       return true;
     }
 
-    // Transfer host if host left (clockwise to next seated player, or first spectator)
+    // Transfer host if host left (clockwise to next seated human player, or first spectator)
     if (wasHost) {
       let nextHostSeat: RoomSeatPlayer | null = null;
       if (seatIndex !== -1) {
         for (let offset = 1; offset < 8; offset += 1) {
           const checkIndex = (seatIndex + offset) % 8;
           const candidate = this.seats[checkIndex];
-          if (candidate) {
+          if (candidate && !candidate.isAi) {
             nextHostSeat = candidate;
             break;
           }
         }
-      } else if (remainingSeated.length > 0) {
-        nextHostSeat = remainingSeated[0];
+      } else if (remainingHumans.length > 0) {
+        nextHostSeat = remainingHumans[0];
       }
 
       if (nextHostSeat) {
@@ -221,6 +225,9 @@ export class MultiplayerRoom {
     const targetSpectator = this.spectators.get(targetId);
     if (!targetSeat && !targetSpectator) {
       return { success: false, error: "目标玩家不在房间内" };
+    }
+    if (targetSeat?.isAi) {
+      return { success: false, error: "无法将房主身份转让给 AI 机器人" };
     }
 
     // Reset old host flag and set target host flag
@@ -295,6 +302,123 @@ export class MultiplayerRoom {
     return true;
   }
 
+  public addAiBot(clientId: string, seatIndex?: number): { success: boolean; error?: string } {
+    if (this.hostId !== clientId) {
+      return { success: false, error: "只有房主才能添加 AI 机器人" };
+    }
+    if (!this.isIdleBetweenHands()) {
+      return { success: false, error: "牌局进行中无法添加 AI 机器人" };
+    }
+
+    let target = seatIndex !== undefined && seatIndex >= 0 && seatIndex < 8 && this.seats[seatIndex] === null
+      ? seatIndex
+      : this.seats.findIndex((s) => s === null);
+
+    if (target === -1) {
+      return { success: false, error: "牌桌已满（8人上限），无法添加更多 AI" };
+    }
+
+    const usedNames = new Set(
+      this.seats
+        .filter((s): s is RoomSeatPlayer => s !== null)
+        .map((s) => s.name)
+        .concat(Array.from(this.spectators.values()).map((s) => s.name))
+    );
+    const botName = BOT_NAMES.find((name) => !usedNames.has(name)) ?? `AI-${target + 1}`;
+    const botId = `bot-${target + 1}-${Math.random().toString(36).slice(2, 6)}`;
+
+    this.seats[target] = {
+      id: botId,
+      name: botName,
+      seatIndex: target,
+      stack: this.config.startingStack,
+      isReady: true,
+      isHost: false,
+      connected: true,
+      timeBankCards: 0,
+      isAi: true,
+    };
+
+    this.broadcast();
+    return { success: true };
+  }
+
+  public removeAiBot(clientId: string, seatIndex: number): { success: boolean; error?: string } {
+    if (this.hostId !== clientId) {
+      return { success: false, error: "只有房主才能移除 AI 机器人" };
+    }
+    if (!this.isIdleBetweenHands()) {
+      return { success: false, error: "牌局进行中无法移除 AI 机器人" };
+    }
+
+    if (seatIndex < 0 || seatIndex >= 8) {
+      return { success: false, error: "无效的座位号" };
+    }
+
+    const seat = this.seats[seatIndex];
+    if (!seat || !seat.isAi) {
+      return { success: false, error: "该座位没有 AI 机器人" };
+    }
+
+    this.seats[seatIndex] = null;
+    if (this.gameState) {
+      this.gameState.seats = this.gameState.seats.filter((s) => s.id !== seat.id);
+    }
+
+    this.broadcast();
+    return { success: true };
+  }
+
+  public fillAiBots(clientId: string, targetCount?: number): { success: boolean; countAdded: number; error?: string } {
+    if (this.hostId !== clientId) {
+      return { success: false, countAdded: 0, error: "只有房主才能操作 AI 机器人" };
+    }
+    if (!this.isIdleBetweenHands()) {
+      return { success: false, countAdded: 0, error: "牌局进行中无法添加 AI 机器人" };
+    }
+
+    const target = targetCount !== undefined
+      ? Math.min(8, Math.max(this.config.minPlayers, targetCount))
+      : this.config.minPlayers;
+
+    let countAdded = 0;
+    while (this.seatedCount < target) {
+      const emptyIdx = this.seats.findIndex((s) => s === null);
+      if (emptyIdx === -1) break;
+      const res = this.addAiBot(clientId, emptyIdx);
+      if (!res.success) break;
+      countAdded += 1;
+    }
+
+    return { success: true, countAdded };
+  }
+
+  public clearAllAiBots(clientId: string): { success: boolean; countRemoved: number; error?: string } {
+    if (this.hostId !== clientId) {
+      return { success: false, countRemoved: 0, error: "只有房主才能操作 AI 机器人" };
+    }
+    if (!this.isIdleBetweenHands()) {
+      return { success: false, countRemoved: 0, error: "牌局进行中无法移除 AI 机器人" };
+    }
+
+    let countRemoved = 0;
+    for (let i = 0; i < 8; i++) {
+      const seat = this.seats[i];
+      if (seat && seat.isAi) {
+        this.seats[i] = null;
+        if (this.gameState) {
+          this.gameState.seats = this.gameState.seats.filter((s) => s.id !== seat.id);
+        }
+        countRemoved += 1;
+      }
+    }
+
+    if (countRemoved > 0) {
+      this.broadcast();
+    }
+    return { success: true, countRemoved };
+  }
+
   public toggleReady(clientId: string): boolean {
     if (this.status === "playing") return false;
     const seat = this.seats.find((s) => s?.id === clientId);
@@ -352,10 +476,10 @@ export class MultiplayerRoom {
 
     // Convert seated players to engine SeatState
     const activeSeated = this.seats.filter((s): s is RoomSeatPlayer => s !== null);
-    const engineSeats: SeatState[] = activeSeated.map((player) => ({
+    const engineSeats: SeatState[] = activeSeated.map((player, idx) => ({
       id: player.id,
       name: player.name,
-      isHuman: true,
+      isHuman: !player.isAi,
       stack: player.stack > 0 ? player.stack : this.config.startingStack,
       holeCards: [],
       folded: false,
@@ -364,6 +488,7 @@ export class MultiplayerRoom {
       committedHand: 0,
       acted: false,
       raiseLocked: false,
+      personality: player.isAi ? createBotPersonality(makeSeed(`mp-bot-${player.id}`), "standard", idx) : undefined,
       stats: structuredClone(EMPTY_STATS),
     }));
 
@@ -376,6 +501,7 @@ export class MultiplayerRoom {
 
     this.gameState = table;
     this.clearTurnTimer();
+    this.clearAiTimer();
     this.broadcast();
     return { success: true };
   }
@@ -395,6 +521,7 @@ export class MultiplayerRoom {
     const thinkingMeta = this.formatThinking(elapsedMs / 1000);
 
     this.clearTurnTimer();
+    this.clearAiTimer();
     this.timeBankActive = false;
 
     try {
@@ -429,6 +556,13 @@ export class MultiplayerRoom {
       return { success: false, error: "牌桌人数超过 8 人上限" };
     }
 
+    // Refill busted AI bots so they don't block next hand
+    for (const player of currentSeated) {
+      if (player.isAi && player.stack <= 0) {
+        player.stack = this.config.startingStack;
+      }
+    }
+
     const fundedPlayers = currentSeated.filter((s) => s.stack > 0);
     if (fundedPlayers.length < this.config.minPlayers) {
       return {
@@ -439,24 +573,29 @@ export class MultiplayerRoom {
 
     this.clearAutoNextHandTimer();
     this.clearTurnTimer();
+    this.clearAiTimer();
     this.timeBankActive = false;
     this.handResultSummary = undefined;
     this.firstHandPending = false;
 
     // Synchronize engine seats with room seats (maintaining clockwise order around table)
     const prevButtonPlayerId = this.gameState.seats[this.gameState.buttonIndex]?.id;
-    const newEngineSeats: SeatState[] = currentSeated.map((player) => {
+    const newEngineSeats: SeatState[] = currentSeated.map((player, idx) => {
       const existing = this.gameState!.seats.find((s) => s.id === player.id);
       if (existing) {
         existing.name = player.name;
-        existing.stack = player.stack;
+        existing.stack = player.stack > 0 ? player.stack : this.config.startingStack;
+        existing.isHuman = !player.isAi;
+        if (player.isAi && !existing.personality) {
+          existing.personality = createBotPersonality(makeSeed(`mp-bot-${player.id}`), "standard", idx);
+        }
         return existing;
       }
       return {
         id: player.id,
         name: player.name,
-        isHuman: true,
-        stack: player.stack,
+        isHuman: !player.isAi,
+        stack: player.stack > 0 ? player.stack : this.config.startingStack,
         holeCards: [],
         folded: false,
         allIn: false,
@@ -464,6 +603,7 @@ export class MultiplayerRoom {
         committedHand: 0,
         acted: false,
         raiseLocked: false,
+        personality: player.isAi ? createBotPersonality(makeSeed(`mp-bot-${player.id}`), "standard", idx) : undefined,
         stats: structuredClone(EMPTY_STATS),
       };
     });
@@ -485,7 +625,7 @@ export class MultiplayerRoom {
 
     try {
       this.gameState = startHand(this.gameState, makeSeed("lan-hand"), {
-        refillBustedBots: false,
+        refillBustedBots: true,
         requireFundedHuman: false,
       });
       this.startTurnTimer();
@@ -535,6 +675,7 @@ export class MultiplayerRoom {
           allIn: false,
           acted: false,
           isHuman: true,
+          isAi: false,
           isHero: false,
           holeCards: [],
           stats: structuredClone(EMPTY_STATS),
@@ -586,7 +727,8 @@ export class MultiplayerRoom {
           lastAction: gameSeat?.lastAction,
           lastActionThinkingSeconds,
           lastActionThinkingText,
-          isHuman: true,
+          isHuman: !roomSeat.isAi,
+          isAi: Boolean(roomSeat.isAi),
           isHero,
           holeCards,
           stats: gameSeat?.stats ? structuredClone(gameSeat.stats) : structuredClone(EMPTY_STATS),
@@ -736,16 +878,62 @@ export class MultiplayerRoom {
     return getPosition(this.gameState, engineIdx);
   }
 
+  private clearAiTimer(): void {
+    if (this.aiTimer) {
+      clearTimeout(this.aiTimer);
+      this.aiTimer = null;
+    }
+  }
+
   private startTurnTimer(): void {
     this.clearTurnTimer();
+    this.clearAiTimer();
     if (!this.gameState || this.gameState.status !== "playing") return;
 
+    const activeSeat = this.gameState.seats[this.gameState.activeIndex];
+    if (!activeSeat) return;
+
+    const roomSeat = this.seats.find((s) => s?.id === activeSeat.id);
+    const isAi = Boolean(roomSeat?.isAi) || !activeSeat.isHuman;
+
     this.turnStartedAt = Date.now();
-    this.turnTotalTime = this.config.regularTurnSeconds;
-    this.turnExpiresAt = Date.now() + this.config.regularTurnSeconds * 1000;
-    this.turnTimer = setTimeout(() => {
-      this.handleTimeout();
-    }, this.config.regularTurnSeconds * 1000);
+
+    if (isAi) {
+      const delayMs = this.config.aiDelayMs ?? 1000;
+      if (delayMs >= 0) {
+        this.turnTotalTime = Math.max(1, Math.round(delayMs / 1000));
+        this.turnExpiresAt = Date.now() + delayMs;
+        this.aiTimer = setTimeout(() => {
+          this.executeAiTurn(activeSeat.id);
+        }, delayMs);
+      }
+    } else {
+      this.turnTotalTime = this.config.regularTurnSeconds;
+      this.turnExpiresAt = Date.now() + this.config.regularTurnSeconds * 1000;
+      this.turnTimer = setTimeout(() => {
+        this.handleTimeout();
+      }, this.config.regularTurnSeconds * 1000);
+    }
+  }
+
+  public executeAiTurn(botId: string): void {
+    this.clearAiTimer();
+    if (!this.gameState || this.gameState.status !== "playing") return;
+
+    const activeSeat = this.gameState.seats[this.gameState.activeIndex];
+    if (!activeSeat || activeSeat.id !== botId) return;
+
+    try {
+      const botView = buildBotView(this.gameState, botId);
+      const personality = activeSeat.personality ?? createBotPersonality(makeSeed(`mp-bot-${botId}`), "standard", this.gameState.activeIndex);
+      const decision = chooseBotAction(botView, personality, "standard", undefined, { iterations: 120 });
+      this.handleAction(botId, decision.action);
+    } catch (err) {
+      console.error(`[MultiplayerRoom] AI turn failed for ${botId}:`, err);
+      const legal = getLegalActions(this.gameState, botId);
+      const fallbackAction: PlayerActionInput = legal.canCheck ? { type: "check" } : { type: "fold" };
+      this.handleAction(botId, fallbackAction);
+    }
   }
 
   private clearTurnTimer(): void {
@@ -810,6 +998,7 @@ export class MultiplayerRoom {
 
     if (this.gameState.status === "complete") {
       this.clearTurnTimer();
+      this.clearAiTimer();
       this.timeBankActive = false;
       if (this.gameState.lastResult) {
         const winnerNames = this.gameState.lastResult.winnerSettlements.map((w) => w.playerName).join("、");
@@ -843,6 +1032,7 @@ export class MultiplayerRoom {
 
   public cleanup(): void {
     this.clearTurnTimer();
+    this.clearAiTimer();
     this.clearAutoNextHandTimer();
   }
 }

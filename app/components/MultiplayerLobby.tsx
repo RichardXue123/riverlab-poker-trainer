@@ -20,6 +20,10 @@ interface MultiplayerLobbyProps {
   onStartGame: () => void;
   onRefreshRooms: () => void;
   onTransferHost?: (targetPlayerId: string) => void;
+  onAddAiBot?: (seatIndex?: number) => void;
+  onRemoveAiBot?: (seatIndex: number) => void;
+  onFillAiBots?: (targetCount?: number) => void;
+  onClearAiBots?: () => void;
   initialRoomCode?: string;
 }
 
@@ -40,6 +44,10 @@ export default function MultiplayerLobby({
   onStartGame,
   onRefreshRooms,
   onTransferHost,
+  onAddAiBot,
+  onRemoveAiBot,
+  onFillAiBots,
+  onClearAiBots,
   initialRoomCode,
 }: MultiplayerLobbyProps) {
   const [inputCode, setInputCode] = useState(initialRoomCode ?? "");
@@ -178,6 +186,59 @@ export default function MultiplayerLobby({
           </div>
         )}
 
+        {/* Host AI Management Bar */}
+        {state.isHost && (
+          <section className="mp-ai-toolbar">
+            <div className="mp-ai-toolbar-label">
+              <span>🤖</span>
+              <b>AI 陪练助手</b>
+              <small>（支持 4-8 人任意人数开局）</small>
+            </div>
+            <div className="mp-ai-toolbar-buttons">
+              {seatedCount < state.config.minPlayers && onFillAiBots && (
+                <button
+                  type="button"
+                  className="mp-btn mp-btn-sm mp-btn-ai-fill"
+                  onClick={() => onFillAiBots(state.config.minPlayers)}
+                  title={`快速添加 AI 补足至 ${state.config.minPlayers} 人以满足开局条件`}
+                >
+                  🤖 一键补齐 AI (至 {state.config.minPlayers} 人)
+                </button>
+              )}
+              {seatedCount < 8 && onFillAiBots && (
+                <button
+                  type="button"
+                  className="mp-btn mp-btn-sm mp-btn-secondary"
+                  onClick={() => onFillAiBots(8)}
+                  title="一键添加 AI 补满 8 人桌"
+                >
+                  🤖 补满 8 人桌
+                </button>
+              )}
+              {seatedCount < 8 && onAddAiBot && (
+                <button
+                  type="button"
+                  className="mp-btn mp-btn-sm mp-btn-secondary"
+                  onClick={() => onAddAiBot()}
+                  title="添加 1 个 AI 机器人"
+                >
+                  + 添加 1 个 AI
+                </button>
+              )}
+              {state.seats.some((s) => s?.isAi) && onClearAiBots && (
+                <button
+                  type="button"
+                  className="mp-btn mp-btn-sm mp-btn-danger"
+                  onClick={() => onClearAiBots()}
+                  title="移除牌桌上的所有 AI 机器人"
+                >
+                  🧹 清空所有 AI
+                </button>
+              )}
+            </div>
+          </section>
+        )}
+
         {/* Seated players list */}
         <section className="mp-seats-grid">
           {state.seats.map((seat, index) => {
@@ -189,15 +250,27 @@ export default function MultiplayerLobby({
                 <div key={index} className="mp-seat-card mp-seat-empty">
                   <div className="mp-seat-num">座位 {index + 1}</div>
                   <div className="mp-empty-label">空位</div>
-                  {state.isSpectator && (
-                    <button
-                      type="button"
-                      className="mp-btn mp-btn-sm mp-btn-primary"
-                      onClick={() => onTakeSeat(index)}
-                    >
-                      入座此位
-                    </button>
-                  )}
+                  <div className="mp-seat-empty-actions">
+                    {state.isSpectator && (
+                      <button
+                        type="button"
+                        className="mp-btn mp-btn-sm mp-btn-primary"
+                        onClick={() => onTakeSeat(index)}
+                      >
+                        入座此位
+                      </button>
+                    )}
+                    {state.isHost && onAddAiBot && (
+                      <button
+                        type="button"
+                        className="mp-btn mp-btn-sm mp-btn-ai-add"
+                        onClick={() => onAddAiBot(index)}
+                        title={`在座位 ${index + 1} 添加 AI 机器人`}
+                      >
+                        + 添加 AI
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             }
@@ -205,11 +278,13 @@ export default function MultiplayerLobby({
             return (
               <div
                 key={index}
-                className={`mp-seat-card ${isMe ? "mp-seat-me" : ""} ${seat.isHost ? "mp-seat-host" : ""}`}
+                className={`mp-seat-card ${isMe ? "mp-seat-me" : ""} ${seat.isHost ? "mp-seat-host" : ""} ${seat.isAi ? "mp-seat-ai" : ""}`}
               >
                 <div className="mp-seat-header">
                   <span className="mp-seat-num">#{index + 1}</span>
-                  {seat.isHost ? (
+                  {seat.isAi ? (
+                    <span className="mp-role-badge mp-role-ai">🤖 AI</span>
+                  ) : seat.isHost ? (
                     <span className="mp-role-badge mp-role-host">👑 房主</span>
                   ) : seat.isReady ? (
                     <span className="mp-role-badge mp-role-ready">✓ 已准备</span>
@@ -229,7 +304,17 @@ export default function MultiplayerLobby({
                     离座观战
                   </button>
                 )}
-                {state.isHost && !seat.isHost && onTransferHost && (
+                {state.isHost && seat.isAi && onRemoveAiBot && (
+                  <button
+                    type="button"
+                    className="mp-btn mp-btn-sm mp-btn-danger mp-btn-remove-ai"
+                    onClick={() => onRemoveAiBot(index)}
+                    title="移除该 AI 机器人"
+                  >
+                    ✕ 移除 AI
+                  </button>
+                )}
+                {state.isHost && !seat.isHost && !seat.isAi && onTransferHost && (
                   <button
                     type="button"
                     className="mp-btn mp-btn-sm mp-btn-transfer"

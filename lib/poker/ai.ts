@@ -18,7 +18,7 @@ import type {
   SeatState,
 } from "./types";
 
-const BOT_NAMES = ["林澈", "老周", "Mika", "阿岚", "北辰", "乔木", "Rin"];
+export const BOT_NAMES = ["林澈", "老周", "Mika", "阿岚", "北辰", "乔木", "Rin"];
 
 function clamp(value: number, min = 0, max = 1): number {
   return Math.max(min, Math.min(max, value));
