@@ -1,4 +1,5 @@
-import type { Card, GameAction, HandResult, LegalActions, PlayerActionInput, PlayerSettlement, PublicSeatState, Street } from "../lib/poker/types";
+import type { Card, GameAction, HandResult, LegalActions, PlayerActionInput, PublicSeatState, Street } from "../lib/poker/types";
+import type { ChaosCharacter, ChaosSelectionState, ChaosSkill, PlayerSkillStatus } from "../lib/poker/chaos-types";
 
 export interface RoomConfig {
   smallBlind: number;
@@ -9,6 +10,7 @@ export interface RoomConfig {
   initialTimeBankCards: number; // 每位玩家拥有的延时卡数量，例如 1, 2, 3
   timeBankExtensionSeconds: number; // 每次延长思考时间 (30秒)
   aiDelayMs?: number; // AI 思考延迟毫秒数 (可选，默认 1000ms，测试时可设为 0)
+  chaosMode?: boolean; // 是否启用「胡闹德州」模式
 }
 
 export interface RoomMember {
@@ -24,6 +26,8 @@ export interface RoomSeatPlayer extends RoomMember {
   isHost: boolean;
   timeBankCards: number;
   isAi?: boolean;
+  characterId?: string; // 选定的武将/角色 ID
+  usedSkills?: string[]; // 已消耗的技能 ID 列表（限定技用后存入此列表，图标灰化）
 }
 
 export interface RoomSpectator extends RoomMember {
@@ -49,6 +53,14 @@ export interface MultiplayerPublicSeat extends PublicSeatState {
   connected: boolean;
   timeBankCards: number;
   isAi?: boolean;
+  characterId?: string; // 选中的武将/角色 ID
+  characterAvatar?: string; // 头像资源路径
+  characterName?: string; // 角色名称
+  characterTitle?: string; // 角色称号
+  characterThemeColor?: string; // 角色代表色
+  characterFallbackText?: string; // 头像回退文本
+  characterSkills?: ChaosSkill[]; // 角色技能清单
+  skillStates?: Record<string, PlayerSkillStatus>; // 各技能实时状态（是否用尽、是否可触发）
 }
 
 export interface MultiplayerTableState {
@@ -59,6 +71,10 @@ export interface MultiplayerTableState {
   isHost: boolean;
   isSpectator: boolean;
   godMode: boolean;
+  chaosMode?: boolean; // 是否处于胡闹模式
+  characterSelection?: ChaosSelectionState; // 选将阶段状态（若进行中）
+  chaosPeekCards?: Card[]; // 观星/显影等技能预知的下一张公共牌（仅自己可见）
+  chaosDeckBottomCards?: Card[]; // 高义【出千】技能透视的牌堆底3张牌（仅己方可见）
   handNumber: number;
   street: Street;
   smallBlind: number;
@@ -95,6 +111,7 @@ export interface RoomSummary {
   spectatorCount: number;
   status: "lobby" | "playing";
   blinds: string;
+  chaosMode?: boolean;
 }
 
 export type ClientMessage =
@@ -108,6 +125,14 @@ export type ClientMessage =
   | { type: "STAND_UP" }
   | { type: "TOGGLE_READY" }
   | { type: "START_GAME" }
+  | { type: "TOGGLE_CHAOS_MODE"; enabled: boolean }
+  | { type: "SELECT_CHARACTER"; characterId: string }
+  | {
+      type: "USE_SKILL";
+      skillId: string;
+      targetPlayerId?: string;
+      targetCardIndex?: number;
+    }
   | { type: "PLAYER_ACTION"; action: PlayerActionInput }
   | { type: "USE_TIME_BANK" }
   | { type: "NEXT_HAND" }

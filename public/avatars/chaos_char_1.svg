@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <defs>
+    <linearGradient id="bg_gaojin" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#b45309" />
+      <stop offset="100%" stop-color="#1c1917" />
+    </linearGradient>
+    <linearGradient id="glow_gaojin" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#d97706" stop-opacity="0.3" />
+    </linearGradient>
+  </defs>
+  <circle cx="60" cy="60" r="56" fill="url(#bg_gaojin)" stroke="#fbbf24" stroke-width="3.5"/>
+  <circle cx="60" cy="60" r="50" fill="#09090b" opacity="0.65"/>
+  <!-- Bust silhouette: Slicked back hair, formal tuxedo -->
+  <path d="M60 22 C46 22 36 32 36 46 C36 57 42 66 52 69 C35 74 24 88 24 102 L96 102 C96 88 85 74 68 69 C78 66 84 57 84 46 C84 32 74 22 60 22 Z" fill="url(#glow_gaojin)"/>
+  <!-- Diamond / God of Gamblers Emblem -->
+  <path d="M60 32 L70 48 L60 64 L50 48 Z" fill="#ffffff" opacity="0.95"/>
+  <circle cx="60" cy="48" r="4" fill="#f59e0b" />
+  <circle cx="60" cy="60" r="57" fill="none" stroke="#fde68a" stroke-width="1" stroke-dasharray="4 6"/>
+  <text x="60" y="112" text-anchor="middle" fill="#fef3c7" font-size="10" font-weight="900" font-family="'PingFang SC', sans-serif">高 进</text>
+</svg>

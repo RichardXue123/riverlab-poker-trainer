@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <defs>
+    <linearGradient id="bg_longwu" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0369a1" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <linearGradient id="glow_longwu" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#0284c7" stop-opacity="0.3" />
+    </linearGradient>
+  </defs>
+  <circle cx="60" cy="60" r="56" fill="url(#bg_longwu)" stroke="#38bdf8" stroke-width="3.5"/>
+  <circle cx="60" cy="60" r="50" fill="#020617" opacity="0.65"/>
+  <!-- Bust silhouette: Buzzcut, tactical bodyguard shoulders -->
+  <path d="M60 24 C48 24 38 33 38 46 C38 56 44 65 52 68 C34 73 22 86 22 102 L98 102 C98 86 86 73 68 68 C76 65 82 56 82 46 C82 33 72 24 60 24 Z" fill="url(#glow_longwu)"/>
+  <!-- Crosshair / Sharpshooter Emblem -->
+  <circle cx="60" cy="46" r="12" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.9"/>
+  <line x1="60" y1="30" x2="60" y2="62" stroke="#ffffff" stroke-width="2" opacity="0.9"/>
+  <line x1="44" y1="46" x2="76" y2="46" stroke="#ffffff" stroke-width="2" opacity="0.9"/>
+  <circle cx="60" cy="46" r="3" fill="#38bdf8"/>
+  <circle cx="60" cy="60" r="57" fill="none" stroke="#bae6fd" stroke-width="1" stroke-dasharray="4 6"/>
+  <text x="60" y="112" text-anchor="middle" fill="#e0f2fe" font-size="10" font-weight="900" font-family="'PingFang SC', sans-serif">龙 五</text>
+</svg>

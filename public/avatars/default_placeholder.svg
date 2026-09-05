@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160">
+  <defs>
+    <radialGradient id="charPlaceholderGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.35"/>
+      <stop offset="60%" stop-color="#1e293b" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#090d16" stop-opacity="0.95"/>
+    </radialGradient>
+    <linearGradient id="charPlaceholderBorder" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="50%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#c084fc"/>
+    </linearGradient>
+    <filter id="charShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.6"/>
+    </filter>
+  </defs>
+
+  <!-- Background Card / Circle Plate -->
+  <circle cx="80" cy="80" r="76" fill="url(#charPlaceholderGlow)" stroke="url(#charPlaceholderBorder)" stroke-width="3" filter="url(#charShadow)"/>
+  <circle cx="80" cy="80" r="70" fill="#0f172a" opacity="0.7"/>
+
+  <!-- Decorative Orbit Dots -->
+  <circle cx="80" cy="80" r="72" fill="none" stroke="#64748b" stroke-width="1" stroke-dasharray="4 6" opacity="0.6"/>
+
+  <!-- Mysterious Character Hood / Silhouette -->
+  <path d="M80 32 C62 32 48 46 48 65 C48 78 55 90 67 95 C45 101 32 118 32 136 L128 136 C128 118 115 101 93 95 C105 90 112 78 112 65 C112 46 98 32 80 32 Z" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+
+  <!-- Glowing Eyes / Mask Motif -->
+  <ellipse cx="71" cy="62" rx="4.5" ry="2" fill="#38bdf8"/>
+  <ellipse cx="89" cy="62" rx="4.5" ry="2" fill="#38bdf8"/>
+
+  <!-- Floating Poker Card Fan Emblem -->
+  <g transform="translate(80, 102) scale(0.65)">
+    <!-- Left card -->
+    <rect x="-32" y="-22" width="22" height="34" rx="2" fill="#e2e8f0" stroke="#0f172a" stroke-width="1.5" transform="rotate(-18)"/>
+    <!-- Right card -->
+    <rect x="10" y="-22" width="22" height="34" rx="2" fill="#e2e8f0" stroke="#0f172a" stroke-width="1.5" transform="rotate(18)"/>
+    <!-- Center card -->
+    <rect x="-11" y="-24" width="22" height="34" rx="2" fill="#ffffff" stroke="#0f172a" stroke-width="1.5"/>
+    <!-- Spade icon on center card -->
+    <path d="M0 -15 C-4 -9 -7 -5 -7 -1 C-7 3 -4 5 -1 5 L-1 8 L1 8 L1 5 C4 5 7 3 7 -1 C7 -5 4 -9 0 -15 Z" fill="#0f172a"/>
+  </g>
+
+  <!-- Placeholder Ribbon Label -->
+  <rect x="36" y="132" width="88" height="18" rx="9" fill="#1e293b" stroke="url(#charPlaceholderBorder)" stroke-width="1"/>
+  <text x="80" y="145" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="700" font-family="system-ui, -apple-system, sans-serif" letter-spacing="1">角色头像占位</text>
+</svg>

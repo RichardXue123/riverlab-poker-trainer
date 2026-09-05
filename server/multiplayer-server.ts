@@ -240,6 +240,36 @@ export class MultiplayerServer {
         }
         break;
       }
+      case "TOGGLE_CHAOS_MODE": {
+        const room = this.getRoomForSession(session);
+        if (room) {
+          const res = room.toggleChaosMode(session.id, msg.enabled);
+          if (!res.success && res.error) {
+            this.send(ws, { type: "ERROR", message: res.error });
+          }
+        }
+        break;
+      }
+      case "SELECT_CHARACTER": {
+        const room = this.getRoomForSession(session);
+        if (room) {
+          const res = room.selectCharacter(session.id, msg.characterId);
+          if (!res.success && res.error) {
+            this.send(ws, { type: "ERROR", message: res.error });
+          }
+        }
+        break;
+      }
+      case "USE_SKILL": {
+        const room = this.getRoomForSession(session);
+        if (room) {
+          const res = room.useSkill(session.id, msg.skillId, msg.targetPlayerId, msg.targetCardIndex);
+          if (!res.success && res.error) {
+            this.send(ws, { type: "ERROR", message: res.error });
+          }
+        }
+        break;
+      }
       case "NEXT_HAND": {
         const room = this.getRoomForSession(session);
         if (room) {
@@ -373,6 +403,7 @@ export class MultiplayerServer {
         spectatorCount: room.spectators.size,
         status: room.status,
         blinds: `${room.config.smallBlind}/${room.config.bigBlind}`,
+        chaosMode: Boolean(room.config.chaosMode),
       });
     }
     return list;

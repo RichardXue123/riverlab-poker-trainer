@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { createSeatRoster, chooseBotAction, driftBotsForNextHand } from "@/lib/poker/ai";
 import { RANK_SYMBOL, SUIT_SYMBOL } from "@/lib/poker/cards";
 import { buildCoachAdvice, createHandReview, GLOSSARY, rateDecision } from "@/lib/poker/coach";
+import { evaluateSeven, compareScores, type HandScore } from "@/lib/poker/evaluator";
 import MultiplayerLobby from "./MultiplayerLobby";
 import MultiplayerTable from "./MultiplayerTable";
 import { PokerTutorial } from "./PokerTutorial";
@@ -55,6 +56,7 @@ import type {
   GameMode,
   HandReview,
   PlayerActionInput,
+  PlayerSettlement,
   SavedHand,
   TableFormat,
   TournamentState,
@@ -90,12 +92,32 @@ function percent(part: number, whole: number): string {
   return whole > 0 ? `${Math.round((part / whole) * 100)}%` : "—";
 }
 
-function CardFace({ card, hidden = false, small = false }: { card?: Card; hidden?: boolean; small?: boolean }) {
-  if (hidden) return <div className={`playing-card card-back ${small ? "card-small" : ""}`} aria-label="暗牌"><span>R</span></div>;
-  if (!card) return <div className={`playing-card card-empty ${small ? "card-small" : ""}`} aria-hidden="true" />;
+function CardFace({
+  card,
+  hidden = false,
+  small = false,
+  highlight = false,
+  highlightLabel,
+  className = "",
+}: {
+  card?: Card;
+  hidden?: boolean;
+  small?: boolean;
+  highlight?: boolean;
+  highlightLabel?: string;
+  className?: string;
+}) {
+  if (hidden) return <div className={`playing-card card-back ${small ? "card-small" : ""} ${className}`} aria-label="暗牌"><span>R</span></div>;
+  if (!card) return <div className={`playing-card card-empty ${small ? "card-small" : ""} ${className}`} aria-hidden="true" />;
   const red = card.suit === "h" || card.suit === "d";
   return (
-    <div className={`playing-card ${red ? "card-red" : "card-black"} ${small ? "card-small" : ""}`} aria-label={`${RANK_SYMBOL[card.rank]}${SUIT_SYMBOL[card.suit]}`}>
+    <div
+      className={`playing-card ${red ? "card-red" : "card-black"} ${small ? "card-small" : ""} ${
+        highlight ? "card-highlighted-hole" : ""
+      } ${className}`}
+      aria-label={`${RANK_SYMBOL[card.rank]}${SUIT_SYMBOL[card.suit]}`}
+    >
+      {highlight && highlightLabel && <span className="card-hole-badge">{highlightLabel}</span>}
       <span className="card-rank">{RANK_SYMBOL[card.rank]}</span>
       <span className="card-suit">{SUIT_SYMBOL[card.suit]}</span>
     </div>
@@ -398,7 +420,15 @@ function Seat({
         </div>
       )}
       <div className="seat-cards">
-        {seat.holeCards.length > 0 && seat.holeCards.map((card) => <CardFace key={card.id} card={card} hidden={!seat.isHuman && !reveal} small />)}
+        {seat.holeCards.length > 0 &&
+          seat.holeCards.map((card) => (
+            <CardFace
+              key={card.id}
+              card={card}
+              hidden={!seat.isHuman && !reveal && !seat.folded}
+              small
+            />
+          ))}
       </div>
       <div className="seat-panel">
         <span className="seat-position">{position}</span>
@@ -927,6 +957,58 @@ function PokerTable({
     return () => window.removeEventListener("keydown", handler);
   }, [humanTurn, legal, onAction]);
 
+  const isCardEqual = (a: Card, b: Card): boolean => {
+    if (a.id && b.id) return a.id === b.id;
+    return a.rank === b.rank && a.suit === b.suit;
+  };
+
+  const showdownContenders = useMemo(() => {
+    if (table.status !== "complete" || table.community.length < 5) return [];
+    if (table.lastResult && table.lastResult.showdown === false) return [];
+    const activeNonFolded = table.seats.filter(
+      (s) => !s.folded && s.holeCards && s.holeCards.length >= 2
+    );
+    if (activeNonFolded.length === 0) return [];
+    if (!table.lastResult && activeNonFolded.length < 2) return [];
+
+    const playerView = buildPlayerView(table, "hero");
+    const positionMap = new Map(playerView.seats.map((s) => [s.id, s.position]));
+
+    return activeNonFolded
+      .map((seat) => {
+        const full7 = [...seat.holeCards, ...table.community.slice(0, 5)];
+        const score = evaluateSeven(full7);
+        const isHoleCard = (c: Card) => seat.holeCards.some((hc) => isCardEqual(hc, c));
+        const settlement = table.lastResult?.playerSettlements?.find((s) => s.playerId === seat.id);
+        const isWinner = Boolean(
+          table.lastResult?.winnerIds?.includes(seat.id) ||
+            settlement?.isWinner ||
+            (settlement?.net && settlement.net > 0)
+        );
+        const position = positionMap.get(seat.id);
+        return {
+          seat,
+          position,
+          score,
+          isHoleCard,
+          isWinner,
+          settlement,
+        };
+      })
+      .sort((a, b) => {
+        if (a.isWinner !== b.isWinner) return a.isWinner ? -1 : 1;
+        return compareScores(b.score, a.score);
+      });
+  }, [table.status, table.community, table.seats, table.lastResult]);
+
+  const showdownContendersMap = useMemo(() => {
+    const map = new Map<string, (typeof showdownContenders)[number]>();
+    for (const item of showdownContenders) {
+      map.set(item.seat.id, item);
+    }
+    return map;
+  }, [showdownContenders]);
+
   const revealAll = table.status === "complete" && mode === "review";
   const showdownReveal = table.status === "complete" && table.lastResult?.showdown;
   const pot = table.status === "complete" ? table.lastResult?.potTotal ?? 0 : potSize(table);
@@ -967,7 +1049,15 @@ function PokerTable({
             <div className="table-brand">RIVERLAB <span>NO LIMIT</span></div>
             <div className="pot-display"><span>{table.status === "complete" ? "本手底池" : "底池"}</span><strong>{formatChips(pot)}</strong><em>{(pot / table.bigBlind).toFixed(1)}BB</em></div>
             <div className="board-cards">{[0, 1, 2, 3, 4].map((index) => <CardFace key={index} card={table.community[index]} />)}</div>
-            {table.seats.map((seat, index) => <Seat key={seat.id} seat={seat} index={index} table={table} reveal={revealAll || Boolean(showdownReveal && !seat.folded)} />)}
+            {table.seats.map((seat, index) => (
+              <Seat
+                key={seat.id}
+                seat={seat}
+                index={index}
+                table={table}
+                reveal={revealAll || Boolean(showdownReveal && !seat.folded)}
+              />
+            ))}
           </div>
 
           <div className="action-dock">
@@ -976,6 +1066,91 @@ function PokerTable({
                 <div className="hand-result-copy">
                   <span>本手结束</span>
                   <strong>{table.lastResult?.summary}</strong>
+
+                  {/* Showdown 5-Card Combinations Showcase */}
+                  {showdownContenders.length > 0 && (
+                    <div className="showdown-hands-container">
+                      <div className="showdown-hands-header">
+                        <span className="showdown-hands-title">
+                          <span className="showdown-icon">⚔️</span> 摊牌比牌 · 牌力与五张组合
+                        </span>
+                        <span className="showdown-hands-sub">
+                          金框高亮为玩家自身底牌 ({showdownContenders.length}家参与比牌)
+                        </span>
+                      </div>
+                      <div className="showdown-hands-grid">
+                        {showdownContenders.map(({ seat, position, score, isHoleCard, isWinner, settlement }) => {
+                          const isHero = seat.isHuman;
+                          const holeUsedCount = score.cards.filter(isHoleCard).length;
+                          return (
+                            <div
+                              key={seat.id}
+                              className={`showdown-contender-card ${isWinner ? "is-winner" : ""} ${isHero ? "is-hero" : ""}`}
+                            >
+                              <div className="showdown-contender-header">
+                                <div className="showdown-contender-user">
+                                  {isWinner ? (
+                                    <span className="showdown-crown-badge">👑 胜者</span>
+                                  ) : (
+                                    <span className="showdown-contender-tag">比牌</span>
+                                  )}
+                                  <span className="showdown-contender-name" title={seat.name}>
+                                    {seat.name} {isHero && <em className="hero-tag">你</em>}
+                                  </span>
+                                  {position && (
+                                    <span className="showdown-contender-pos">{position}</span>
+                                  )}
+                                </div>
+
+                                <div className="showdown-contender-rank-box">
+                                  <span className={`showdown-rank-badge rank-category-${score.category}`}>
+                                    【{score.name}】
+                                  </span>
+                                  {settlement && (
+                                    <span
+                                      className={`showdown-net-pill ${
+                                        settlement.net > 0 ? "win" : settlement.net < 0 ? "loss" : "even"
+                                      }`}
+                                    >
+                                      {settlement.net > 0 ? "+" : settlement.net < 0 ? "−" : "±0"}
+                                      {formatChips(Math.abs(settlement.net))}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="showdown-five-cards">
+                                {score.cards.map((c, idx) => {
+                                  const isFromHole = isHoleCard(c);
+                                  return (
+                                    <CardFace
+                                      key={`${c.rank}-${c.suit}-${idx}`}
+                                      card={c}
+                                      small
+                                      highlight={isFromHole}
+                                      highlightLabel="底牌"
+                                    />
+                                  );
+                                })}
+                              </div>
+
+                              <div className="showdown-contender-footer">
+                                <span className="showdown-usage-desc">
+                                  {holeUsedCount === 2 ? (
+                                    <>使用 <b>2</b> 张自身底牌 + <b>3</b> 张公共牌</>
+                                  ) : holeUsedCount === 1 ? (
+                                    <>使用 <b>1</b> 张自身底牌 + <b>4</b> 张公共牌</>
+                                  ) : (
+                                    <>公共牌打板 (<b>0</b> 张底牌)</>
+                                  )}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                   {table.lastResult?.playerSettlements?.length ? (
                     <div className="hand-settlement-grid">
                       <div className="hand-settlement-header-row">
@@ -1620,6 +1795,10 @@ export default function PokerTrainer() {
           onRemoveAiBot={(seatIndex) => sendMp({ type: "REMOVE_AI_BOT", seatIndex })}
           onFillAiBots={(targetCount) => sendMp({ type: "FILL_AI_BOTS", targetCount })}
           onClearAiBots={() => sendMp({ type: "CLEAR_AI_BOTS" })}
+          onSelectCharacter={(characterId) => sendMp({ type: "SELECT_CHARACTER", characterId })}
+          onUseSkill={(skillId, targetPlayerId, targetCardIndex) =>
+            sendMp({ type: "USE_SKILL", skillId, targetPlayerId, targetCardIndex })
+          }
         />
       );
     }
@@ -1668,6 +1847,7 @@ export default function PokerTrainer() {
           onRemoveAiBot={(seatIndex) => sendMp({ type: "REMOVE_AI_BOT", seatIndex })}
           onFillAiBots={(targetCount) => sendMp({ type: "FILL_AI_BOTS", targetCount })}
           onClearAiBots={() => sendMp({ type: "CLEAR_AI_BOTS" })}
+          onToggleChaosMode={(enabled) => sendMp({ type: "TOGGLE_CHAOS_MODE", enabled })}
           initialRoomCode={initialRoomCode}
         />
       </div>

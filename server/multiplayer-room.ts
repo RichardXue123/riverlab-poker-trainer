@@ -1,3 +1,6 @@
+import { INITIAL_CHAOS_CHARACTERS } from "../lib/poker/chaos-types";
+import type { ChaosCharacter, ChaosSelectionState, ChaosSkill, PlayerSkillStatus } from "../lib/poker/chaos-types";
+import { CardPoolManager } from "../lib/poker/state-machine";
 import { BOT_NAMES, chooseBotAction, createBotPersonality } from "../lib/poker/ai";
 import {
   applyAction,
@@ -11,7 +14,7 @@ import {
 } from "../lib/poker/engine";
 import { makeSeed } from "../lib/poker/rng";
 import { EMPTY_STATS } from "../lib/poker/types";
-import type { FullGameState, PlayerActionInput, SeatState } from "../lib/poker/types";
+import type { Card, FullGameState, PlayerActionInput, SeatState } from "../lib/poker/types";
 import { calculateGodModeEquities } from "./multiplayer-equity";
 import type {
   GodModeEquityItem,
@@ -33,6 +36,10 @@ export class MultiplayerRoom {
   public handResultSummary?: string;
   public timeBankActive = false;
   public firstHandPending = false;
+  public characterSelectionState?: ChaosSelectionState;
+  private characterSelectionTimer: NodeJS.Timeout | null = null;
+  public cannotFoldPlayerIds: Set<string> = new Set();
+  public fanbenEligiblePlayerIds: Set<string> = new Set();
 
   public turnStartedAt = 0;
   private turnTimer: NodeJS.Timeout | null = null;
@@ -63,6 +70,7 @@ export class MultiplayerRoom {
       initialTimeBankCards: config?.initialTimeBankCards ?? 2,
       timeBankExtensionSeconds: regSeconds, // 延时卡增加长度等于单次常规思考时间的一倍
       aiDelayMs: config?.aiDelayMs,
+      chaosMode: Boolean(config?.chaosMode),
     };
     this.turnTotalTime = regSeconds;
 
@@ -250,7 +258,7 @@ export class MultiplayerRoom {
   }
 
   public isIdleBetweenHands(): boolean {
-    return this.status === "lobby" || this.firstHandPending || this.gameState?.status === "complete";
+    return (this.status === "lobby" || this.firstHandPending || this.gameState?.status === "complete") && !this.characterSelectionState?.active;
   }
 
   public takeSeat(clientId: string, targetIndex?: number): boolean {
@@ -461,6 +469,87 @@ export class MultiplayerRoom {
     return { canStart: true };
   }
 
+  public toggleChaosMode(clientId: string, enabled: boolean): { success: boolean; error?: string } {
+    if (this.hostId !== clientId) {
+      return { success: false, error: "只有房主才能切换胡闹模式" };
+    }
+    if (this.status === "playing") {
+      return { success: false, error: "牌局进行中无法切换模式" };
+    }
+    this.config.chaosMode = enabled;
+    this.broadcast();
+    return { success: true };
+  }
+
+  public clearCharacterSelectionTimer(): void {
+    if (this.characterSelectionTimer) {
+      clearTimeout(this.characterSelectionTimer);
+      this.characterSelectionTimer = null;
+    }
+  }
+
+  public startCharacterSelection(): void {
+    this.clearCharacterSelectionTimer();
+    const expiresAt = Date.now() + 20000;
+    this.characterSelectionState = {
+      active: true,
+      expiresAt,
+      timeRemaining: 20,
+      availableCharacters: INITIAL_CHAOS_CHARACTERS,
+      selectedMap: {},
+    };
+
+    this.characterSelectionTimer = setTimeout(() => {
+      this.handleCharacterSelectionTimeout();
+    }, 20000);
+  }
+
+  public handleCharacterSelectionTimeout(): void {
+    if (!this.characterSelectionState || !this.characterSelectionState.active) return;
+    this.clearCharacterSelectionTimer();
+
+    // 未选择的真人玩家默认随机或指定第一个角色
+    const seatedHumans = this.seats.filter((s): s is RoomSeatPlayer => s !== null && !s.isAi);
+    for (const human of seatedHumans) {
+      if (!human.characterId) {
+        human.characterId = "chaos_char_1";
+      }
+    }
+
+    this.characterSelectionState = undefined;
+    this.initGameTable();
+  }
+
+  public selectCharacter(clientId: string, characterId: string): { success: boolean; error?: string } {
+    if (!this.characterSelectionState || !this.characterSelectionState.active) {
+      return { success: false, error: "当前不在选将阶段" };
+    }
+    const seat = this.seats.find((s) => s?.id === clientId);
+    if (!seat || seat.isAi) {
+      return { success: false, error: "只有在座真人玩家才能选择角色" };
+    }
+    const valid = INITIAL_CHAOS_CHARACTERS.find((c) => c.id === characterId);
+    if (!valid) {
+      return { success: false, error: "无效的角色" };
+    }
+
+    seat.characterId = characterId;
+    this.characterSelectionState.selectedMap[clientId] = characterId;
+
+    // 检查是否所有在座真人玩家均已选定角色
+    const seatedHumans = this.seats.filter((s): s is RoomSeatPlayer => s !== null && !s.isAi);
+    const allSelected = seatedHumans.every((h) => Boolean(h.characterId));
+    if (allSelected) {
+      this.clearCharacterSelectionTimer();
+      this.characterSelectionState = undefined;
+      this.initGameTable();
+    } else {
+      this.broadcast();
+    }
+
+    return { success: true };
+  }
+
   public startGame(clientId: string): { success: boolean; error?: string } {
     if (this.hostId !== clientId) {
       return { success: false, error: "只有房主才能开始牌局" };
@@ -470,6 +559,18 @@ export class MultiplayerRoom {
       return { success: false, error: eligibility.reason };
     }
 
+    if (this.config.chaosMode) {
+      this.status = "playing";
+      this.startCharacterSelection();
+      this.broadcast();
+      return { success: true };
+    }
+
+    this.initGameTable();
+    return { success: true };
+  }
+
+  private initGameTable(): void {
     this.status = "playing";
     this.firstHandPending = true;
     this.handResultSummary = undefined;
@@ -503,7 +604,6 @@ export class MultiplayerRoom {
     this.clearTurnTimer();
     this.clearAiTimer();
     this.broadcast();
-    return { success: true };
   }
 
   public handleAction(clientId: string, actionInput: PlayerActionInput): { success: boolean; error?: string } {
@@ -520,15 +620,24 @@ export class MultiplayerRoom {
     const elapsedMs = this.turnStartedAt > 0 ? Math.max(0, now - this.turnStartedAt) : 0;
     const thinkingMeta = this.formatThinking(elapsedMs / 1000);
 
+    if (actionInput.type === "fold" && this.cannotFoldPlayerIds.has(clientId)) {
+      return { success: false, error: "受到【断魂】封绝，本轮不能弃牌！" };
+    }
+
     this.clearTurnTimer();
     this.clearAiTimer();
     this.timeBankActive = false;
 
+    const prevStreet = this.gameState.street;
     try {
       this.gameState = applyAction(this.gameState, actionInput, undefined, thinkingMeta);
     } catch (err) {
       this.startTurnTimer();
       return { success: false, error: err instanceof Error ? err.message : "无效的行动" };
+    }
+
+    if (this.gameState.street !== prevStreet) {
+      this.cannotFoldPlayerIds.clear();
     }
 
     this.syncPlayerStacks();
@@ -623,11 +732,31 @@ export class MultiplayerRoom {
       this.gameState.buttonIndex = -1;
     }
 
+    this.cannotFoldPlayerIds.clear();
+    this.fanbenEligiblePlayerIds.clear();
+
+    if (this.config.chaosMode) {
+      const bb = this.config.bigBlind;
+      for (const roomSeat of this.seats) {
+        if (roomSeat) {
+          // 陈刀仔【翻本】：一手牌开始时，若筹码少于 10BB 则获得翻本补贴资格
+          if (roomSeat.characterId === "chaos_char_3" && roomSeat.stack < 10 * bb) {
+            this.fanbenEligiblePlayerIds.add(roomSeat.id);
+          }
+          // 陈刀仔【学艺】：每手限一次，新开手牌时重置
+          if (roomSeat.usedSkills) {
+            roomSeat.usedSkills = roomSeat.usedSkills.filter((sId) => sId !== "skill_xueyi");
+          }
+        }
+      }
+    }
+
     try {
       this.gameState = startHand(this.gameState, makeSeed("lan-hand"), {
         refillBustedBots: true,
         requireFundedHuman: false,
       });
+
       this.startTurnTimer();
       this.broadcast();
       return { success: true };
@@ -651,6 +780,143 @@ export class MultiplayerRoom {
       return true;
     }
     return false;
+  }
+
+  public useSkill(
+    clientId: string,
+    skillId: string,
+    targetPlayerId?: string,
+    targetCardIndex?: number,
+  ): { success: boolean; error?: string; broadcastText?: string } {
+    if (!this.config.chaosMode) {
+      return { success: false, error: "当前房间未开启胡闹模式" };
+    }
+    if (!this.gameState || this.gameState.status !== "playing") {
+      return { success: false, error: "牌局尚未开始" };
+    }
+    const seat = this.seats.find((s) => s?.id === clientId);
+    if (!seat || !seat.characterId) {
+      return { success: false, error: "你尚未选择出战角色" };
+    }
+
+    const char = INITIAL_CHAOS_CHARACTERS.find((c) => c.id === seat.characterId);
+    if (!char) {
+      return { success: false, error: "未找到角色定义" };
+    }
+
+    const skill = char.skills.find((s) => s.id === skillId);
+    if (!skill) {
+      return { success: false, error: "该角色没有此技能" };
+    }
+
+    if (!seat.usedSkills) {
+      seat.usedSkills = [];
+    }
+
+    if (skill.type === "limited" && seat.usedSkills.includes(skillId)) {
+      return { success: false, error: `限定技【${skill.name}】本局已发动过，无法再次使用` };
+    }
+
+    let effectBroadcast = "";
+
+    if (skillId === "skill_bianpai") {
+      if (this.gameState.street !== "river") {
+        return { success: false, error: "【变牌】只能在翻开河牌后发动" };
+      }
+      const activeSeat = this.gameState.seats[this.gameState.activeIndex];
+      if (!activeSeat || activeSeat.id !== clientId) {
+        return { success: false, error: "【变牌】只能在轮到你行动时发动" };
+      }
+      const heroSeat = this.gameState.seats.find((s) => s.id === clientId);
+      if (!heroSeat || heroSeat.holeCards.length === 0) {
+        return { success: false, error: "底牌无效" };
+      }
+
+      // 无论成败均视为发动过【变牌】
+      if (!seat.usedSkills.includes("skill_bianpai")) {
+        seat.usedSkills.push("skill_bianpai");
+      }
+
+      // 校验方块3：若方块3已出现在公共牌中，或已被发给任意玩家（已弃牌玩家的底牌同样参与判断），则变牌失败
+      const inPlayCards = [
+        ...this.gameState.community,
+        ...this.gameState.seats.flatMap((s) => s.holeCards),
+      ];
+      const diamond3InPlay = inPlayCards.some((c) => c.rank === 3 && c.suit === "d");
+
+      if (diamond3InPlay) {
+        effectBroadcast = `❌【${seat.name}】尝试发动限定技【变牌】，但【♦3】已被其他玩家持有或已在公共牌中，变牌失败！`;
+      } else {
+        const cardIdx = targetCardIndex !== undefined && targetCardIndex >= 0 && targetCardIndex < heroSeat.holeCards.length
+          ? targetCardIndex
+          : 0;
+        CardPoolManager.transformCard(this.gameState, clientId, cardIdx, { rank: 3, suit: "d" });
+        effectBroadcast = `✨【${seat.name}】发动限定技【变牌】成功！将第 ${cardIdx + 1} 张底牌变幻为【♦3】！`;
+      }
+    } else if (skillId === "skill_xueyi") {
+      if (this.gameState.street !== "river") {
+        return { success: false, error: "【学艺】只能在翻开河牌后发动" };
+      }
+      const activeSeat = this.gameState.seats[this.gameState.activeIndex];
+      if (!activeSeat || activeSeat.id !== clientId) {
+        return { success: false, error: "【学艺】只能在轮到你行动时发动" };
+      }
+      const heroSeat = this.gameState.seats.find((s) => s.id === clientId);
+      if (!heroSeat || heroSeat.holeCards.length === 0) {
+        return { success: false, error: "底牌无效" };
+      }
+      if (seat.usedSkills.includes("skill_xueyi")) {
+        return { success: false, error: "【学艺】每手限发动一次，本手已使用过" };
+      }
+
+      // 未使用牌指当前未出现在任何玩家底牌及公共牌中的牌
+      const inPlayCards = [
+        ...this.gameState.community,
+        ...this.gameState.seats.flatMap((s) => s.holeCards),
+      ];
+      const inPlayIds = new Set(inPlayCards.map((c) => c.id));
+      const unusedCards = this.gameState.deck.filter((c) => !inPlayIds.has(c.id));
+      if (unusedCards.length === 0) {
+        return { success: false, error: "牌库中暂无可用剩余牌" };
+      }
+
+      const pickedCard = unusedCards[Math.floor(Math.random() * unusedCards.length)];
+      const cardIdx = targetCardIndex !== undefined && targetCardIndex >= 0 && targetCardIndex < heroSeat.holeCards.length
+        ? targetCardIndex
+        : 0;
+      const oldCard = heroSeat.holeCards[cardIdx];
+      heroSeat.holeCards[cardIdx] = { ...pickedCard };
+
+      // 维护牌库一致性：将替换掉的牌放入牌堆
+      const deckIdx = this.gameState.deck.findIndex((c) => c.id === pickedCard.id);
+      if (deckIdx !== -1) {
+        this.gameState.deck[deckIdx] = { ...oldCard };
+      }
+
+      seat.usedSkills.push("skill_xueyi");
+      effectBroadcast = `🎲【${seat.name}】发动【学艺】：将第 ${cardIdx + 1} 张底牌替换为牌库中的随机未使用牌！`;
+    } else {
+      return { success: false, error: "该技能为常驻锁定技，无需手动发动" };
+    }
+
+    if (effectBroadcast && this.gameState) {
+      const potBefore = this.gameState.seats.reduce((sum, s) => sum + s.committedHand, 0);
+      this.gameState.actionLog.push({
+        index: this.gameState.actionLog.length,
+        playerId: seat.id,
+        playerName: seat.name,
+        type: "call",
+        amount: 0,
+        to: 0,
+        street: this.gameState.street,
+        potBefore,
+        timestamp: Date.now(),
+        thinkingText: effectBroadcast,
+      });
+    }
+
+    this.broadcast();
+    return { success: true, broadcastText: effectBroadcast };
   }
 
   public buildClientState(clientId: string): MultiplayerTableState {
@@ -692,13 +958,22 @@ export class MultiplayerRoom {
       // Determine visible hole cards with anti-cheat protection:
       // - If client is hero: reveal own hole cards
       // - If client is spectator AND godMode: reveal all active cards
+      // Determine visible hole cards:
+      // - If client is hero: reveal own hole cards
+      // - If client is spectator AND godMode: reveal all cards
       // - If game reached showdown/complete: reveal showdown cards
-      const isShowdown = this.gameState?.street === "showdown" || this.gameState?.status === "complete";
+      // - If player folded: reveal folded cards (they are dead cards and will not be drawn again)
+      const isShowdown =
+        (this.gameState?.street === "showdown" || this.gameState?.status === "complete") &&
+        (this.gameState?.lastResult ? this.gameState.lastResult.showdown : true);
+      const isFolded = Boolean(gameSeat?.folded);
       let holeCards = (gameSeat?.holeCards ?? []).map((c) => ({ ...c }));
 
-      if (!isHero && !godMode && !isShowdown) {
-        // Mask other players' hole cards
-        holeCards = [];
+      if (!isHero && !godMode) {
+        if (!isShowdown && !isFolded) {
+          // Mask other active players' hole cards if hand is still in progress and they have not folded
+          holeCards = [];
+        }
       }
 
         let lastActionThinkingSeconds = gameSeat?.lastActionThinkingSeconds;
@@ -712,6 +987,32 @@ export class MultiplayerRoom {
               break;
             }
           }
+        }
+
+        const char = roomSeat.characterId ? INITIAL_CHAOS_CHARACTERS.find((c) => c.id === roomSeat.characterId) : undefined;
+        const characterSkills = char?.skills ?? [];
+        const skillStates: Record<string, PlayerSkillStatus> = {};
+
+        for (const skill of characterSkills) {
+          const used = roomSeat.usedSkills?.includes(skill.id) ?? false;
+          let available = false;
+          if (skill.type === "locked") {
+            available = true;
+          } else if (skill.type === "limited" || skill.type === "active") {
+            if (!used && this.gameState && this.gameState.status === "playing") {
+              const isSeatTurn = this.gameState.activeIndex >= 0 && this.gameState.seats[this.gameState.activeIndex]?.id === roomSeat.id;
+              if (skill.id === "skill_bianpai" && this.gameState.street === "river" && isSeatTurn) {
+                available = true;
+              } else if (skill.id === "skill_xueyi" && this.gameState.street === "river" && isSeatTurn) {
+                available = true;
+              }
+            }
+          }
+          skillStates[skill.id] = {
+            used,
+            available,
+            usagesCount: used ? 1 : 0,
+          };
         }
 
         return {
@@ -736,6 +1037,14 @@ export class MultiplayerRoom {
           isHost: roomSeat.isHost,
           connected: roomSeat.connected,
           timeBankCards: roomSeat.timeBankCards,
+          characterId: roomSeat.characterId,
+          characterAvatar: char?.avatar,
+          characterName: char?.name,
+          characterTitle: char?.title,
+          characterThemeColor: char?.themeColor,
+          characterFallbackText: char?.avatarFallbackText,
+          characterSkills,
+          skillStates,
         };
       });
 
@@ -762,9 +1071,43 @@ export class MultiplayerRoom {
           maxTo: 0,
         };
 
+    if (this.cannotFoldPlayerIds.has(clientId)) {
+      legalActions.canFold = false;
+    }
+
     // My own hole cards
     const heroGameSeat = this.gameState?.seats.find((s) => s.id === clientId);
     const myHoleCards = heroGameSeat?.holeCards ?? [];
+
+    // 锁定技【显影】：在翻前下注轮中，未来翻牌的第一张公共牌对高义可见
+    let chaosPeekCards: Card[] | undefined;
+    const heroRoomSeat = this.seats.find((s) => s?.id === clientId);
+    if (
+      this.config.chaosMode &&
+      heroRoomSeat?.characterId === "chaos_char_4" &&
+      this.gameState &&
+      this.gameState.street === "preflop" &&
+      this.gameState.deck &&
+      this.gameState.deck.length > this.gameState.deckIndex + 1
+    ) {
+      // 翻牌发牌前会 burn 1 张牌 (deckIndex + 0)，翻牌第 1 张为 deckIndex + 1
+      const firstFlopCard = this.gameState.deck[this.gameState.deckIndex + 1];
+      if (firstFlopCard) {
+        chaosPeekCards = [{ ...firstFlopCard }];
+      }
+    }
+
+    // 锁定技【出千】：牌堆底的 3 张牌对高义始终可见
+    let chaosDeckBottomCards: Card[] | undefined;
+    if (
+      this.config.chaosMode &&
+      heroRoomSeat?.characterId === "chaos_char_4" &&
+      this.gameState &&
+      this.gameState.deck &&
+      this.gameState.deck.length >= 3
+    ) {
+      chaosDeckBottomCards = this.gameState.deck.slice(-3).map((c) => ({ ...c }));
+    }
 
     // God-mode equity calculation
     let godModeEquities: GodModeEquityItem[] | undefined;
@@ -780,7 +1123,6 @@ export class MultiplayerRoom {
     }
 
     const timeRemaining = Math.max(0, Math.ceil((this.turnExpiresAt - Date.now()) / 1000));
-    const heroRoomSeat = this.seats.find((s) => s?.id === clientId);
     const myTimeBankCards = heroRoomSeat?.timeBankCards ?? 0;
     const isMyTurn = this.gameState?.status === "playing" && this.gameState.seats[this.gameState.activeIndex]?.id === clientId;
     // Allowed to use extension card only if remaining time <= 5 seconds and cards > 0
@@ -804,6 +1146,15 @@ export class MultiplayerRoom {
       isHost,
       isSpectator,
       godMode,
+      chaosMode: Boolean(this.config.chaosMode),
+      characterSelection: this.characterSelectionState
+        ? {
+            ...this.characterSelectionState,
+            timeRemaining: Math.max(0, Math.ceil((this.characterSelectionState.expiresAt - Date.now()) / 1000)),
+          }
+        : undefined,
+      chaosPeekCards,
+      chaosDeckBottomCards,
       handNumber: this.gameState?.handNumber ?? 0,
       street: this.gameState?.street ?? "preflop",
       smallBlind: this.gameState?.smallBlind ?? this.config.smallBlind,
@@ -899,9 +1250,9 @@ export class MultiplayerRoom {
     this.turnStartedAt = Date.now();
 
     if (isAi) {
-      const delayMs = this.config.aiDelayMs ?? 1000;
+      const delayMs = this.config.aiDelayMs ?? 1500;
       if (delayMs >= 0) {
-        this.turnTotalTime = Math.max(1, Math.round(delayMs / 1000));
+        this.turnTotalTime = Math.max(1, delayMs / 1000);
         this.turnExpiresAt = Date.now() + delayMs;
         this.aiTimer = setTimeout(() => {
           this.executeAiTurn(activeSeat.id);
@@ -1009,6 +1360,103 @@ export class MultiplayerRoom {
           : "";
         this.handResultSummary = `🏆 本手结算：${winnerNames} 赢得了底池 ${pot} 筹码${netStr}！`;
       }
+
+      // 胡闹德州：一手牌结算触发技能
+      if (this.config.chaosMode && this.gameState) {
+        const bb = this.config.bigBlind;
+
+        // 1. 高进【朱古力】：本手牌累计主动投入不少于 10BB，且【变牌】已经发动过，重置【变牌】
+        for (const seat of this.gameState.seats) {
+          const roomSeat = this.seats.find((s) => s?.id === seat.id);
+          if (roomSeat?.characterId === "chaos_char_1" && roomSeat.usedSkills?.includes("skill_bianpai")) {
+            const voluntaryCommitted = this.gameState.actionLog
+              .filter((a) => a.playerId === seat.id && ["call", "bet", "raise", "all-in"].includes(a.type))
+              .reduce((sum, a) => sum + a.amount, 0);
+
+            if (voluntaryCommitted >= 10 * bb) {
+              roomSeat.usedSkills = roomSeat.usedSkills.filter((sId) => sId !== "skill_bianpai");
+              const resetNotice = `🍫【${roomSeat.name}】触发锁定技【朱古力】：本手牌累计主动投入达 ${(voluntaryCommitted / bb).toFixed(1)}BB，限定技【变牌】已恢复就绪！`;
+              this.gameState.actionLog.push({
+                index: this.gameState.actionLog.length,
+                playerId: seat.id,
+                playerName: seat.name,
+                type: "call",
+                amount: 0,
+                to: 0,
+                street: this.gameState.street,
+                potBefore: potSize(this.gameState),
+                timestamp: Date.now(),
+                thinkingText: resetNotice,
+              });
+            }
+          }
+        }
+
+        // 2. 龙五【枪神】：以跟注的方式进入摊牌并最终获胜，额外获得 1BB
+        if (this.gameState.lastResult?.showdown) {
+          for (const seat of this.gameState.seats) {
+            const roomSeat = this.seats.find((s) => s?.id === seat.id);
+            if (roomSeat?.characterId === "chaos_char_2" && this.gameState.lastResult.winnerIds.includes(seat.id)) {
+              const playerActions = this.gameState.actionLog.filter(
+                (a) => a.playerId === seat.id && ["call", "bet", "raise", "all-in", "check"].includes(a.type)
+              );
+              const lastAction = playerActions[playerActions.length - 1];
+              if (lastAction && lastAction.type === "call") {
+                const bonus = 1 * bb;
+                seat.stack += bonus;
+                roomSeat.stack += bonus;
+                const qiangshenNotice = `🎯【${roomSeat.name}】触发锁定技【枪神】：以跟注识破对手进入摊牌并获胜，额外获赠 1BB (${bonus}) 筹码！`;
+                this.gameState.actionLog.push({
+                  index: this.gameState.actionLog.length,
+                  playerId: seat.id,
+                  playerName: seat.name,
+                  type: "call",
+                  amount: bonus,
+                  to: bonus,
+                  street: this.gameState.street,
+                  potBefore: potSize(this.gameState),
+                  timestamp: Date.now(),
+                  thinkingText: qiangshenNotice,
+                });
+              }
+            }
+          }
+        }
+
+        // 3. 陈刀仔【翻本】：一手牌开始时筹码少于 10BB，结算若获得净收益，额外获得等同于净收益的筹码，至多 5BB
+        if (this.gameState.lastResult?.playerSettlements) {
+          for (const seat of this.gameState.seats) {
+            const roomSeat = this.seats.find((s) => s?.id === seat.id);
+            if (roomSeat?.characterId === "chaos_char_3" && this.fanbenEligiblePlayerIds.has(seat.id)) {
+              const settlement = this.gameState.lastResult.playerSettlements.find((p) => p.playerId === seat.id);
+              if (settlement) {
+                const netProfit = settlement.received - settlement.contributed;
+                if (netProfit > 0) {
+                  const bonus = Math.min(netProfit, 5 * bb);
+                  seat.stack += bonus;
+                  roomSeat.stack += bonus;
+                  const fanbenNotice = `💰【${roomSeat.name}】触发锁定技【翻本】：本手净收益 +${netProfit}，额外获得 +${bonus} 筹码翻本补贴！`;
+                  this.gameState.actionLog.push({
+                    index: this.gameState.actionLog.length,
+                    playerId: seat.id,
+                    playerName: seat.name,
+                    type: "call",
+                    amount: bonus,
+                    to: bonus,
+                    street: this.gameState.street,
+                    potBefore: potSize(this.gameState),
+                    timestamp: Date.now(),
+                    thinkingText: fanbenNotice,
+                  });
+                }
+              }
+            }
+          }
+          this.fanbenEligiblePlayerIds.clear();
+        }
+
+        this.syncPlayerStacks();
+      }
       // 不会自动进入下一手，必须等待房主主动点击「开始下一手」
     } else {
       // Continue next turn
@@ -1034,5 +1482,6 @@ export class MultiplayerRoom {
     this.clearTurnTimer();
     this.clearAiTimer();
     this.clearAutoNextHandTimer();
+    this.clearCharacterSelectionTimer();
   }
 }

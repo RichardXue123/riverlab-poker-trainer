@@ -1,14 +1,18 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { RANK_SYMBOL, SUIT_SYMBOL } from "@/lib/poker/cards";
 import { GLOSSARY } from "@/lib/poker/coach";
 import { ACTION_LABELS, STREET_LABELS } from "@/lib/poker/engine";
+import { evaluateSeven, compareScores } from "@/lib/poker/evaluator";
 import { playPokerSound } from "@/lib/poker/sound";
 import type { Card, PlayerActionInput } from "@/lib/poker/types";
 import type { MultiplayerTableState } from "@/server/multiplayer-types";
 import { AudioControls, formatChips } from "./PokerTrainer";
 import { PokerTutorial } from "./PokerTutorial";
+import CharacterAvatar from "./CharacterAvatar";
+import ChaosSkillBadge from "./ChaosSkillBadge";
+import type { ChaosSkill } from "@/lib/poker/chaos-types";
 
 interface MultiplayerTableProps {
   state: MultiplayerTableState;
@@ -33,27 +37,46 @@ interface MultiplayerTableProps {
   onRemoveAiBot?: (seatIndex: number) => void;
   onFillAiBots?: (targetCount?: number) => void;
   onClearAiBots?: () => void;
+  onSelectCharacter?: (characterId: string) => void;
+  onUseSkill?: (skillId: string, targetPlayerId?: string, targetCardIndex?: number) => void;
 }
 
 type MpPanelTab = "timeline" | "tutorial" | "glossary" | "equity";
 
-function CardFace({ card, hidden = false, small = false }: { card?: Card; hidden?: boolean; small?: boolean }) {
+function CardFace({
+  card,
+  hidden = false,
+  small = false,
+  highlight = false,
+  highlightLabel,
+  className = "",
+}: {
+  card?: Card;
+  hidden?: boolean;
+  small?: boolean;
+  highlight?: boolean;
+  highlightLabel?: string;
+  className?: string;
+}) {
   if (hidden) {
     return (
-      <div className={`playing-card card-back ${small ? "card-small" : ""}`} aria-label="暗牌">
+      <div className={`playing-card card-back ${small ? "card-small" : ""} ${className}`} aria-label="暗牌">
         <span>R</span>
       </div>
     );
   }
   if (!card) {
-    return <div className={`playing-card card-empty ${small ? "card-small" : ""}`} aria-hidden="true" />;
+    return <div className={`playing-card card-empty ${small ? "card-small" : ""} ${className}`} aria-hidden="true" />;
   }
   const red = card.suit === "h" || card.suit === "d";
   return (
     <div
-      className={`playing-card ${red ? "card-red" : "card-black"} ${small ? "card-small" : ""}`}
+      className={`playing-card ${red ? "card-red" : "card-black"} ${small ? "card-small" : ""} ${
+        highlight ? "card-highlighted-hole" : ""
+      } ${className}`}
       aria-label={`${RANK_SYMBOL[card.rank]}${SUIT_SYMBOL[card.suit]}`}
     >
+      {highlight && highlightLabel && <span className="card-hole-badge">{highlightLabel}</span>}
       <span className="card-rank">{RANK_SYMBOL[card.rank]}</span>
       <span className="card-suit">{SUIT_SYMBOL[card.suit]}</span>
     </div>
@@ -82,8 +105,11 @@ export default function MultiplayerTable({
   onRemoveAiBot,
   onFillAiBots,
   onClearAiBots,
+  onSelectCharacter,
+  onUseSkill,
 }: MultiplayerTableProps) {
   const [tab, setTab] = useState<MpPanelTab>("timeline");
+  const [activeSkillTargetModal, setActiveSkillTargetModal] = useState<ChaosSkill | null>(null);
 
   const mySeat = state.seats.find((s) => s.id === state.myId);
   const isMyTurn = state.activeIndex >= 0 && state.seats[state.activeIndex]?.id === state.myId;
@@ -129,6 +155,34 @@ export default function MultiplayerTable({
     return () => clearInterval(interval);
   }, [state.activeIndex, state.status, state.turnExpiresAt, state.turnTotalTime, state.config.regularTurnSeconds, isWaitingForHost]);
 
+  // Live countdown & smooth progress bar for Chaos Character Selection
+  const [charTimeRemaining, setCharTimeRemaining] = useState(
+    state.characterSelection?.timeRemaining ?? 20
+  );
+  const [charProgressPercent, setCharProgressPercent] = useState(100);
+
+  useEffect(() => {
+    if (!state.characterSelection?.active || !state.characterSelection.expiresAt) {
+      setCharProgressPercent(100);
+      setCharTimeRemaining(state.characterSelection?.timeRemaining ?? 20);
+      return;
+    }
+
+    const totalMs = 20000;
+    const updateCharTimer = () => {
+      const now = Date.now();
+      const remainingMs = Math.max(0, state.characterSelection!.expiresAt - now);
+      const remainingSec = Math.ceil(remainingMs / 1000);
+      const pct = Math.min(100, Math.max(0, (remainingMs / totalMs) * 100));
+      setCharTimeRemaining(remainingSec);
+      setCharProgressPercent(pct);
+    };
+
+    updateCharTimer();
+    const interval = setInterval(updateCharTimer, 100);
+    return () => clearInterval(interval);
+  }, [state.characterSelection?.active, state.characterSelection?.expiresAt, state.characterSelection?.timeRemaining]);
+
   const canUseTimeBank = isMyTurn && state.myTimeBankCards > 0 && remainingSeconds <= 5 && !isWaitingForHost;
 
   useEffect(() => {
@@ -162,6 +216,53 @@ export default function MultiplayerTable({
     const base = state.currentBet === 0 ? Math.round(pot * fraction) : state.currentBet + Math.round(pot * fraction);
     setBetSlider(Math.max(minTo, Math.min(maxTo, base)));
   };
+
+  const isCardEqual = (a: Card, b: Card): boolean => {
+    if (a.id && b.id) return a.id === b.id;
+    return a.rank === b.rank && a.suit === b.suit;
+  };
+
+  const showdownContenders = useMemo(() => {
+    if (!isHandComplete || state.community.length < 5) return [];
+    if (state.lastResult && state.lastResult.showdown === false) return [];
+    const activeNonFolded = state.seats.filter(
+      (s) => s.id && !s.id.startsWith("empty-") && !s.folded && s.holeCards && s.holeCards.length >= 2
+    );
+    if (activeNonFolded.length === 0) return [];
+    if (!state.lastResult && activeNonFolded.length < 2) return [];
+
+    return activeNonFolded
+      .map((seat) => {
+        const full7 = [...seat.holeCards, ...state.community.slice(0, 5)];
+        const score = evaluateSeven(full7);
+        const isHoleCard = (c: Card) => seat.holeCards.some((hc) => isCardEqual(hc, c));
+        const settlement = state.lastResult?.playerSettlements?.find((s) => s.playerId === seat.id);
+        const isWinner = Boolean(
+          state.lastResult?.winnerIds?.includes(seat.id) ||
+            settlement?.isWinner ||
+            (settlement?.net && settlement.net > 0)
+        );
+        return {
+          seat,
+          score,
+          isHoleCard,
+          isWinner,
+          settlement,
+        };
+      })
+      .sort((a, b) => {
+        if (a.isWinner !== b.isWinner) return a.isWinner ? -1 : 1;
+        return compareScores(b.score, a.score);
+      });
+  }, [isHandComplete, state.community, state.seats, state.lastResult]);
+
+  const showdownContendersMap = useMemo(() => {
+    const map = new Map<string, (typeof showdownContenders)[number]>();
+    for (const item of showdownContenders) {
+      map.set(item.seat.id, item);
+    }
+    return map;
+  }, [showdownContenders]);
 
   const showEquityTab = Boolean(state.isSpectator || state.godMode);
 
@@ -361,11 +462,12 @@ export default function MultiplayerTable({
 
               const isActive = state.activeIndex === index;
               const isHero = seat.id === state.myId;
-              const showCards = isHero || state.godMode || state.street === "showdown" || state.street === "complete";
+              const showCards = isHero || state.godMode || seat.folded || state.street === "showdown" || state.street === "complete";
               const seatEquity = state.godMode ? state.godModeEquities?.find((eq) => eq.playerId === seat.id) : undefined;
               const seatSettlement = isHandComplete
                 ? state.lastResult?.playerSettlements?.find((s) => s.playerId === seat.id)
                 : undefined;
+              const seatShowdown = showdownContendersMap.get(seat.id);
 
               return (
                 <div
@@ -416,7 +518,12 @@ export default function MultiplayerTable({
                   <div className="seat-cards">
                     {seat.holeCards.length > 0 ? (
                       seat.holeCards.map((c, i) => (
-                        <CardFace key={i} card={c} hidden={!showCards} small />
+                        <CardFace
+                          key={i}
+                          card={c}
+                          hidden={!showCards}
+                          small
+                        />
                       ))
                     ) : (
                       !seat.folded && (
@@ -428,17 +535,97 @@ export default function MultiplayerTable({
                     )}
                   </div>
 
-                  <div className="seat-panel">
+                  <div className={`seat-panel ${seat.characterId ? "has-character" : ""}`}>
                     {seat.position && <span className="seat-position">{seat.position}</span>}
-                    <b>
-                      {seat.isHost && <span title="当前房主">👑 </span>}
-                      {seat.isAi && <span className="seat-ai-tag" title="AI 机器人" style={{ color: "#60a5fa", marginRight: "3px" }}>🤖</span>}
-                      {seat.name} {isHero && "(你)"}
-                    </b>
-                    <strong>
-                      {formatChips(seat.stack)}{" "}
-                      <small>{(seat.stack / state.bigBlind).toFixed(0)}BB</small>
-                    </strong>
+                    {seat.characterId ? (
+                      <div
+                        className="seat-hero-layout"
+                        title={
+                          `${seat.characterName || "出战角色"} · ${seat.characterTitle || ""}\n` +
+                          (seat.characterSkills
+                            ?.map(
+                              (s) =>
+                                `【${s.name}】(${s.type === "limited" ? "限定技" : "锁定技"})${
+                                  seat.skillStates?.[s.id]?.used ? " [已发动/灰化]" : ""
+                                }：${s.description}`
+                            )
+                            .join("\n") || "")
+                        }
+                      >
+                        <div className="seat-hero-avatar-box">
+                          <CharacterAvatar
+                            src={seat.characterAvatar}
+                            name={seat.characterName}
+                            fallbackText={seat.characterFallbackText}
+                            themeColor={seat.characterThemeColor || "#38bdf8"}
+                            size="md"
+                            showBorder={true}
+                          />
+                          {seat.characterSkills?.some((s) => s.type === "limited") && (
+                            <span
+                              className={`seat-skill-micro-badge ${
+                                seat.characterSkills.some(
+                                  (s) => s.type === "limited" && seat.skillStates?.[s.id]?.used
+                                )
+                                  ? "spent"
+                                  : "ready"
+                              }`}
+                              title={
+                                seat.characterSkills.some(
+                                  (s) => s.type === "limited" && seat.skillStates?.[s.id]?.used
+                                )
+                                  ? "限定技已耗尽 (已变灰)"
+                                  : "限定技待命中"
+                              }
+                            >
+                              {seat.characterSkills.some(
+                                (s) => s.type === "limited" && seat.skillStates?.[s.id]?.used
+                              )
+                                ? "灰"
+                                : "🔥"}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="seat-hero-meta">
+                          <div className="seat-hero-title-row">
+                            <span
+                              className="seat-hero-badge"
+                              style={{
+                                backgroundColor: seat.characterThemeColor || "#38bdf8",
+                                color: "#0f172a",
+                              }}
+                            >
+                              {seat.characterTitle || "角色"}
+                            </span>
+                            <span className="seat-hero-name" style={{ color: seat.characterThemeColor || "#38bdf8" }}>
+                              {seat.characterName}
+                            </span>
+                          </div>
+                          <b className="seat-player-name-line">
+                            {seat.isHost && <span title="当前房主">👑 </span>}
+                            {seat.isAi && <span className="seat-ai-tag" title="AI 机器人" style={{ color: "#60a5fa", marginRight: "3px" }}>🤖</span>}
+                            {seat.name} {isHero && "(你)"}
+                          </b>
+                          <strong className="seat-hero-chips">
+                            {formatChips(seat.stack)}{" "}
+                            <small>{(seat.stack / state.bigBlind).toFixed(0)}BB</small>
+                          </strong>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <b>
+                          {seat.isHost && <span title="当前房主">👑 </span>}
+                          {seat.isAi && <span className="seat-ai-tag" title="AI 机器人" style={{ color: "#60a5fa", marginRight: "3px" }}>🤖</span>}
+                          {seat.name} {isHero && "(你)"}
+                        </b>
+                        <strong>
+                          {formatChips(seat.stack)}{" "}
+                          <small>{(seat.stack / state.bigBlind).toFixed(0)}BB</small>
+                        </strong>
+                      </>
+                    )}
                     {state.isHost && seat.isAi && isWaitingForHost && onRemoveAiBot && (
                       <button
                         type="button"
@@ -543,9 +730,17 @@ export default function MultiplayerTable({
                       </span>
                     )}
                     {isActive && (
-                      <span className="seat-action" style={{ color: remainingSeconds <= 5 ? "#ef4444" : "var(--gold-light)" }}>
-                        思考中 {remainingSeconds}s
-                      </span>
+                      <>
+                        <span className="seat-action" style={{ color: remainingSeconds <= 5 ? "#ef4444" : "var(--gold-light)" }}>
+                          思考中 {remainingSeconds}s
+                        </span>
+                        <div className="seat-thinking-bar" title={`思考倒计时 ${remainingSeconds}s`}>
+                          <div
+                            className={`seat-thinking-fill ${remainingSeconds <= 5 ? "urgent" : ""}`}
+                            style={{ width: `${progressPercent}%` }}
+                          />
+                        </div>
+                      </>
                     )}
                   </div>
 
@@ -570,6 +765,183 @@ export default function MultiplayerTable({
                   className={`dock-timer-fill ${remainingSeconds <= 5 ? "urgent" : ""}`}
                   style={{ width: `${progressPercent}%` }}
                 />
+              </div>
+            )}
+
+            {/* Chaos Mode: Hero Character Cockpit HUD */}
+            {state.chaosMode && mySeat?.characterId && (
+              <div
+                className="hero-chaos-hud"
+                style={{
+                  borderColor: mySeat.characterThemeColor ? `${mySeat.characterThemeColor}55` : undefined,
+                }}
+              >
+                {!isWaitingForHost && state.activeIndex >= 0 && (
+                  <div className="hero-chaos-timer-track" title={`思考倒计时 ${remainingSeconds}s`}>
+                    <div
+                      className={`hero-chaos-timer-fill ${remainingSeconds <= 5 ? "urgent" : ""}`}
+                      style={{ width: `${progressPercent}%` }}
+                    />
+                  </div>
+                )}
+                <div className="hero-chaos-avatar-slot">
+                  <CharacterAvatar
+                    src={mySeat.characterAvatar}
+                    name={mySeat.characterName}
+                    fallbackText={mySeat.characterFallbackText}
+                    themeColor={mySeat.characterThemeColor || "#38bdf8"}
+                    size="lg"
+                    shape="circle"
+                    showBorder={true}
+                  />
+                </div>
+                <div className="hero-chaos-info">
+                  <div className="hero-chaos-tagline">
+                    <span
+                      className="hero-chaos-badge"
+                      style={{
+                        backgroundColor: mySeat.characterThemeColor || "#38bdf8",
+                        color: "#0f172a",
+                      }}
+                    >
+                      {mySeat.characterTitle || "出战角色"}
+                    </span>
+                    <strong className="hero-chaos-name">{mySeat.characterName}</strong>
+                  </div>
+                  <small style={{ color: "#94a3b8", fontSize: "11px" }}>专属技能栏 (限定技一局限一次，用完灰化)</small>
+                </div>
+                <div className="hero-chaos-skills-tray">
+                  {mySeat.characterSkills && mySeat.characterSkills.length > 0 ? (
+                    mySeat.characterSkills.map((skill) => {
+                      const status = mySeat.skillStates?.[skill.id];
+                      return (
+                        <ChaosSkillBadge
+                          key={skill.id}
+                          skill={skill}
+                          status={status}
+                          interactive={true}
+                          size="sm"
+                          onTrigger={(s) => {
+                            if (s.targetType === "player" || s.targetType === "self_card") {
+                              setActiveSkillTargetModal(s);
+                            } else {
+                              onUseSkill?.(s.id);
+                            }
+                          }}
+                        />
+                      );
+                    })
+                  ) : (
+                    <div className="hero-chaos-skill-pill" title="技能设计接入就绪">
+                      <span>⚡ 专属技能准备就绪</span>
+                    </div>
+                  )}
+
+                  {/* 锁定技【显影】透视公共牌预览 */}
+                  {state.chaosPeekCards && state.chaosPeekCards.length > 0 && (
+                    <div className="hero-chaos-peek-slot" title="【显影】翻前预知到的下一张公共牌">
+                      <span className="peek-tag">👁️ 翻牌显影</span>
+                      <CardFace card={state.chaosPeekCards[0]} small />
+                    </div>
+                  )}
+
+                  {/* 锁定技【出千】牌堆底牌预览 */}
+                  {state.chaosDeckBottomCards && state.chaosDeckBottomCards.length > 0 && (
+                    <div className="hero-chaos-peek-slot chuqian-slot" title="【出千】始终可见的牌堆底3张牌">
+                      <span className="peek-tag">🃏 出千底牌</span>
+                      <div className="chuqian-cards-row" style={{ display: "flex", gap: "4px" }}>
+                        {state.chaosDeckBottomCards.map((c, i) => (
+                          <CardFace key={i} card={c} small />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Chaos Mode: Target Selection Dialog for Skills */}
+            {activeSkillTargetModal && (
+              <div className="skill-target-dialog" role="dialog" aria-modal="true" aria-label="选择技能目标">
+                <div className="skill-target-dialog-inner">
+                  <div className="skill-target-header">
+                    <span className="skill-target-badge">
+                      {activeSkillTargetModal.type === "limited" ? "🔥 限定技发动" : "⚡ 技能发动"}
+                    </span>
+                    <h4>【{activeSkillTargetModal.name}】选择生效目标</h4>
+                    <p>{activeSkillTargetModal.description}</p>
+                  </div>
+
+                  {activeSkillTargetModal.targetType === "player" && (
+                    <div className="skill-target-players-list">
+                      <p className="skill-target-prompt">请选择场上一名目标对手：</p>
+                      <div className="skill-target-chips">
+                        {state.seats
+                          .filter((s) => s.id && !s.id.startsWith("empty-") && s.id !== state.myId && !s.folded)
+                          .map((targetSeat) => (
+                            <button
+                              key={targetSeat.id}
+                              type="button"
+                              className="skill-target-player-btn"
+                              onClick={() => {
+                                onUseSkill?.(activeSkillTargetModal.id, targetSeat.id);
+                                setActiveSkillTargetModal(null);
+                              }}
+                            >
+                              <CharacterAvatar
+                                src={targetSeat.characterAvatar}
+                                name={targetSeat.name}
+                                fallbackText={targetSeat.characterFallbackText}
+                                themeColor={targetSeat.characterThemeColor}
+                                size="sm"
+                              />
+                              <span className="target-name">{targetSeat.name}</span>
+                              <small className="target-chips">{formatChips(targetSeat.stack)}</small>
+                            </button>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {activeSkillTargetModal.targetType === "self_card" && (
+                    <div className="skill-target-cards-list">
+                      <p className="skill-target-prompt">
+                        {activeSkillTargetModal.id === "skill_bianpai"
+                          ? "请选择你想要尝试变造为【♦3】的底牌："
+                          : "请选择你想要替换为随机未使用牌的底牌："}
+                      </p>
+                      <div className="skill-target-cards">
+                        {(mySeat?.holeCards ?? []).map((c, idx) => (
+                          <button
+                            key={idx}
+                            type="button"
+                            className="skill-target-card-btn"
+                            onClick={() => {
+                              onUseSkill?.(activeSkillTargetModal.id, undefined, idx);
+                              setActiveSkillTargetModal(null);
+                            }}
+                          >
+                            <span className="target-card-index">第 {idx + 1} 张底牌</span>
+                            <CardFace card={c} small />
+                            <span className="target-card-action">
+                              {activeSkillTargetModal.id === "skill_bianpai" ? "变幻为 ♦3" : "随机换牌"}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="skill-target-footer">
+                    <button
+                      type="button"
+                      className="skill-target-cancel-btn"
+                      onClick={() => setActiveSkillTargetModal(null)}
+                    >
+                      取消
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -635,6 +1007,91 @@ export default function MultiplayerTable({
                       </span>
                     )}
                   </strong>
+
+                  {/* Showdown 5-Card Combinations Showcase */}
+                  {showdownContenders.length > 0 && (
+                    <div className="showdown-hands-container">
+                      <div className="showdown-hands-header">
+                        <span className="showdown-hands-title">
+                          <span className="showdown-icon">⚔️</span> 摊牌比牌 · 牌力与五张组合
+                        </span>
+                        <span className="showdown-hands-sub">
+                          金框高亮为玩家自身底牌 ({showdownContenders.length}家参与比牌)
+                        </span>
+                      </div>
+                      <div className="showdown-hands-grid">
+                        {showdownContenders.map(({ seat, score, isHoleCard, isWinner, settlement }) => {
+                          const isHero = seat.id === state.myId;
+                          const holeUsedCount = score.cards.filter(isHoleCard).length;
+                          return (
+                            <div
+                              key={seat.id}
+                              className={`showdown-contender-card ${isWinner ? "is-winner" : ""} ${isHero ? "is-hero" : ""}`}
+                            >
+                              <div className="showdown-contender-header">
+                                <div className="showdown-contender-user">
+                                  {isWinner ? (
+                                    <span className="showdown-crown-badge">👑 胜者</span>
+                                  ) : (
+                                    <span className="showdown-contender-tag">比牌</span>
+                                  )}
+                                  <span className="showdown-contender-name" title={seat.name}>
+                                    {seat.name} {isHero && <em className="hero-tag">你</em>}
+                                  </span>
+                                  {seat.position && (
+                                    <span className="showdown-contender-pos">{seat.position}</span>
+                                  )}
+                                </div>
+
+                                <div className="showdown-contender-rank-box">
+                                  <span className={`showdown-rank-badge rank-category-${score.category}`}>
+                                    【{score.name}】
+                                  </span>
+                                  {settlement && (
+                                    <span
+                                      className={`showdown-net-pill ${
+                                        settlement.net > 0 ? "win" : settlement.net < 0 ? "loss" : "even"
+                                      }`}
+                                    >
+                                      {settlement.net > 0 ? "+" : settlement.net < 0 ? "−" : "±0"}
+                                      {formatChips(Math.abs(settlement.net))}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="showdown-five-cards">
+                                {score.cards.map((c, idx) => {
+                                  const isFromHole = isHoleCard(c);
+                                  return (
+                                    <CardFace
+                                      key={`${c.rank}-${c.suit}-${idx}`}
+                                      card={c}
+                                      small
+                                      highlight={isFromHole}
+                                      highlightLabel="底牌"
+                                    />
+                                  );
+                                })}
+                              </div>
+
+                              <div className="showdown-contender-footer">
+                                <span className="showdown-usage-desc">
+                                  {holeUsedCount === 2 ? (
+                                    <>使用 <b>2</b> 张自身底牌 + <b>3</b> 张公共牌</>
+                                  ) : holeUsedCount === 1 ? (
+                                    <>使用 <b>1</b> 张自身底牌 + <b>4</b> 张公共牌</>
+                                  ) : (
+                                    <>公共牌打板 (<b>0</b> 张底牌)</>
+                                  )}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                   {state.lastResult?.playerSettlements && state.lastResult.playerSettlements.length > 0 && (
                     <div className="hand-settlement-grid">
                       <div className="hand-settlement-header-row">
@@ -827,9 +1284,17 @@ export default function MultiplayerTable({
                   <i />
                   <i />
                 </div>
-                <p>
-                  等待 <b>{activeSeat?.name ?? "玩家"}</b> 行动中... <em>({remainingSeconds}s)</em>
-                </p>
+                <div className="waiting-action-detail">
+                  <p>
+                    等待 <b>{activeSeat?.name ?? "玩家"}</b> 行动中... <em>({remainingSeconds}s)</em>
+                  </p>
+                  <div className="waiting-timer-track">
+                    <div
+                      className={`waiting-timer-fill ${remainingSeconds <= 5 ? "urgent" : ""}`}
+                      style={{ width: `${progressPercent}%` }}
+                    />
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -1076,6 +1541,123 @@ export default function MultiplayerTable({
           </div>
         </aside>
       </div>
+
+      {/* Chaos Mode Character Selection Modal */}
+      {state.characterSelection?.active && (
+        <div className="char-selection-overlay" role="dialog" aria-modal="true" aria-label="角色选择">
+          <div className="char-selection-modal">
+            <div className="char-selection-header">
+              <div className="char-selection-title-box">
+                <span className="char-selection-badge">🌀 胡闹德州模式</span>
+                <h2>选择你的出战角色</h2>
+                <p>每个角色拥有独特的被动或主动技能，初版支持自由选将（可重复选择）</p>
+              </div>
+              <div className="char-selection-timer">
+                <span>思考倒计时</span>
+                <strong className={charTimeRemaining <= 5 ? "timer-urgent" : ""}>
+                  {charTimeRemaining}s
+                </strong>
+              </div>
+            </div>
+
+            {/* Live Character Selection Thinking Progress Bar */}
+            <div className="char-selection-progress-bar" title={`选将思考时间剩余 ${charTimeRemaining}s`}>
+              <div
+                className={`char-selection-progress-fill ${charTimeRemaining <= 5 ? "urgent" : ""}`}
+                style={{ width: `${charProgressPercent}%` }}
+              />
+            </div>
+
+            <div className="char-cards-grid">
+              {state.characterSelection.availableCharacters.map((char) => {
+                const isSelected = state.characterSelection?.selectedMap[state.myId] === char.id;
+                return (
+                  <div
+                    key={char.id}
+                    className={`char-card ${isSelected ? "char-card-selected" : ""}`}
+                    style={{ borderColor: isSelected ? char.themeColor : undefined }}
+                    onClick={() => onSelectCharacter?.(char.id)}
+                  >
+                    <div className="char-avatar-box" style={{ background: `radial-gradient(circle, ${char.themeColor}33 0%, rgba(15,23,42,0.8) 70%)` }}>
+                      <CharacterAvatar
+                        src={char.avatar}
+                        name={char.name}
+                        fallbackText={char.avatarFallbackText}
+                        themeColor={char.themeColor}
+                        size="xl"
+                        showBorder={true}
+                      />
+                      <span className="char-theme-badge" style={{ backgroundColor: char.themeColor }}>
+                        {char.title}
+                      </span>
+                    </div>
+
+                    <div className="char-info-box">
+                      <h4 style={{ color: char.themeColor }}>{char.name}</h4>
+                      <p className="char-desc">{char.description}</p>
+                      
+                      <div className="char-skills-box">
+                        {char.skills.map((skill) => (
+                          <ChaosSkillBadge key={skill.id} skill={skill} size="sm" interactive={false} />
+                        ))}
+                      </div>
+
+                      <button
+                        type="button"
+                        className={`char-select-btn ${isSelected ? "btn-selected" : ""}`}
+                        style={isSelected ? { backgroundColor: char.themeColor, borderColor: char.themeColor } : {}}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectCharacter?.(char.id);
+                        }}
+                      >
+                        {isSelected ? "✓ 已选定此角色" : "出战此角色"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Selection Progress Bar */}
+            <div className="char-selection-roster">
+              <span className="roster-title">各座位选将进度：</span>
+              <div className="roster-list">
+                {state.seats
+                  .filter((s) => s.id && !s.id.startsWith("empty-"))
+                  .map((s) => {
+                    const pickedId = state.characterSelection?.selectedMap[s.id];
+                    const pickedChar = pickedId
+                      ? state.characterSelection?.availableCharacters.find((c) => c.id === pickedId)
+                      : undefined;
+                    return (
+                      <div key={s.id} className={`roster-chip ${pickedId ? "confirmed" : "pending"}`}>
+                        <span className="roster-player-name">{s.name}</span>
+                        {s.isAi ? (
+                          <span className="roster-status ai">🤖 无技能</span>
+                        ) : pickedChar ? (
+                          <span className="roster-status confirmed" style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                            <CharacterAvatar
+                              src={pickedChar.avatar}
+                              name={pickedChar.name}
+                              fallbackText={pickedChar.avatarFallbackText}
+                              themeColor={pickedChar.themeColor}
+                              size="xs"
+                              showBorder={false}
+                            />
+                            <span>✓ {pickedChar.name}</span>
+                          </span>
+                        ) : (
+                          <span className="roster-status pending">思考中...</span>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

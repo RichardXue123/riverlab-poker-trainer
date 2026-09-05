@@ -24,6 +24,7 @@ interface MultiplayerLobbyProps {
   onRemoveAiBot?: (seatIndex: number) => void;
   onFillAiBots?: (targetCount?: number) => void;
   onClearAiBots?: () => void;
+  onToggleChaosMode?: (enabled: boolean) => void;
   initialRoomCode?: string;
 }
 
@@ -48,6 +49,7 @@ export default function MultiplayerLobby({
   onRemoveAiBot,
   onFillAiBots,
   onClearAiBots,
+  onToggleChaosMode,
   initialRoomCode,
 }: MultiplayerLobbyProps) {
   const [inputCode, setInputCode] = useState(initialRoomCode ?? "");
@@ -63,6 +65,7 @@ export default function MultiplayerLobby({
   const [minPlayers, setMinPlayers] = useState(4);
   const [regularTurnSeconds, setRegularTurnSeconds] = useState(20);
   const [initialTimeBankCards, setInitialTimeBankCards] = useState(2);
+  const [chaosMode, setChaosMode] = useState(false);
 
   useEffect(() => {
     setNameVal(playerName);
@@ -106,6 +109,7 @@ export default function MultiplayerLobby({
       regularTurnSeconds,
       initialTimeBankCards,
       timeBankExtensionSeconds: regularTurnSeconds,
+      chaosMode,
     });
   };
 
@@ -135,8 +139,24 @@ export default function MultiplayerLobby({
             <span className="mp-tag">筹码 {state.config.startingStack}</span>
             <span className="mp-tag">⏱️ 思考 {state.config.regularTurnSeconds}s / 步</span>
             <span className="mp-tag">⏳ 延时卡 {state.config.initialTimeBankCards} 张 (+30s)</span>
+            {state.chaosMode && (
+              <span className="mp-tag" style={{ background: "rgba(168, 85, 247, 0.2)", color: "#d8b4fe", borderColor: "rgba(168, 85, 247, 0.4)" }}>
+                🌀 胡闹德州模式 (角色与技能)
+              </span>
+            )}
           </div>
           <div className="mp-header-right">
+            {state.isHost && onToggleChaosMode && (
+              <button
+                type="button"
+                className={`mp-btn mp-btn-sm ${state.chaosMode ? "mp-btn-primary" : "mp-btn-secondary"}`}
+                style={state.chaosMode ? { background: "linear-gradient(135deg, #7c3aed, #db2777)", borderColor: "#db2777", color: "#fff" } : {}}
+                onClick={() => onToggleChaosMode(!state.chaosMode)}
+                title="房主切换是否启用胡闹德州模式（技能与角色）"
+              >
+                {state.chaosMode ? "🌀 模式：胡闹德州 (开启中)" : "🃏 模式：基础德州 (点击开启胡闹)"}
+              </button>
+            )}
             <button
               type="button"
               className="mp-btn mp-btn-secondary"
@@ -617,6 +637,32 @@ export default function MultiplayerLobby({
             </div>
           </div>
 
+          <div className="mp-form-group">
+            <label>游戏玩法模式</label>
+            <div className="mp-segmented">
+              <button
+                type="button"
+                className={!chaosMode ? "active" : ""}
+                onClick={() => setChaosMode(false)}
+              >
+                🃏 基础德州
+              </button>
+              <button
+                type="button"
+                className={chaosMode ? "active" : ""}
+                onClick={() => setChaosMode(true)}
+                style={chaosMode ? { background: "linear-gradient(135deg, #7c3aed, #db2777)", color: "#fff", borderColor: "#db2777" } : {}}
+              >
+                🌀 胡闹德州模式 (角色与技能)
+              </button>
+            </div>
+            {chaosMode && (
+              <p style={{ fontSize: "11px", color: "#c084fc", marginTop: "6px", lineHeight: "1.4" }}>
+                ✨ 开启后开局将进入选将阶段，玩家可选择心仪角色并在牌局中发动专属技能！
+              </p>
+            )}
+          </div>
+
           <button
             type="button"
             className="mp-btn mp-btn-lg mp-btn-primary"
@@ -689,6 +735,11 @@ export default function MultiplayerLobby({
               <div key={room.code} className="mp-room-item-card">
                 <div className="mp-room-item-head">
                   <span className="mp-room-code-tag">{room.code}</span>
+                  {room.chaosMode && (
+                    <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "4px", background: "rgba(168, 85, 247, 0.2)", color: "#c084fc", border: "1px solid rgba(168, 85, 247, 0.4)", fontWeight: "bold" }}>
+                      🌀 胡闹模式
+                    </span>
+                  )}
                   <span className={`mp-room-status-badge ${room.status === "playing" ? "playing" : "waiting"}`}>
                     {room.status === "playing" ? "牌局进行中" : "等待准备"}
                   </span>
