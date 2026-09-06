@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
-    "start": "vinext start",
+    "start": "tsx server/production-server.ts",
     "test": "tsx --test tests/*.test.ts",
     "train:ai": "tsx training/cli.ts",
     "train:ai:smoke": "tsx training/cli.ts --generations 1 --population 8 --hands 2 --rounds 1 --iterations 6 --seed smoke",

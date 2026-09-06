@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import PokerTrainer from "./components/PokerTrainer";
+import FeedbackCenter from "./components/FeedbackCenter";
 
 export const metadata: Metadata = {
   title: "RiverLab 德扑训练室",
@@ -7,5 +8,5 @@ export const metadata: Metadata = {
 };
 
 export default function Home() {
-  return <PokerTrainer />;
+  return <><PokerTrainer /><FeedbackCenter /></>;
 }

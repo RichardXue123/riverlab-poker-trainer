@@ -1,6 +1,7 @@
 import vinext from "vinext";
 import { defineConfig, type Plugin } from "vite";
 import { globalMultiplayerServer } from "./server/multiplayer-server";
+import { feedbackPlugin } from "./server/feedback/plugin";
 
 function multiplayerWsPlugin(): Plugin {
   return {
@@ -15,7 +16,7 @@ function multiplayerWsPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [vinext(), multiplayerWsPlugin()],
+  plugins: [feedbackPlugin(), vinext(), multiplayerWsPlugin()],
   server: {
     host: "0.0.0.0",
     port: 4311,

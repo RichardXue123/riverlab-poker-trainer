@@ -42,3 +42,5 @@ next-env.d.ts
 /outputs/
 /work/
 /training-output/
+/.feedback-worktrees/
+/data/
