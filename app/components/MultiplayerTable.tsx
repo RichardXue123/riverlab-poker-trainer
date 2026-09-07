@@ -462,7 +462,10 @@ export default function MultiplayerTable({
 
               const isActive = state.activeIndex === index;
               const isHero = seat.id === state.myId;
-              const showCards = isHero || state.godMode || seat.folded || state.street === "showdown" || state.street === "complete";
+              const showCards =
+                isHero ||
+                state.godMode ||
+                (!seat.folded && (state.street === "showdown" || state.street === "complete"));
               const seatEquity = state.godMode ? state.godModeEquities?.find((eq) => eq.playerId === seat.id) : undefined;
               const seatSettlement = isHandComplete
                 ? state.lastResult?.playerSettlements?.find((s) => s.playerId === seat.id)
@@ -526,7 +529,7 @@ export default function MultiplayerTable({
                         />
                       ))
                     ) : (
-                      !seat.folded && (
+                      !isFirstHandPending && (
                         <>
                           <CardFace hidden small />
                           <CardFace hidden small />

@@ -83,17 +83,57 @@ test("Showdown: contenders extraction excludes folded players and uncontested ha
   assert.ok(!activeNonFolded.some((s) => s.id === "p2"), "Folded player Bob must be excluded from showdown contenders");
 });
 
-test("Folded player: hole cards are retained and visible with folded status", () => {
+test("Folded player: cards remain face-down to other players, visible to hero, and retained in seat state", () => {
   const bobHoleCards = cards("9h 8h");
   const bobSeat = { id: "p2", name: "Bob", folded: true, holeCards: bobHoleCards };
 
-  // When a player folds, their cards won't be drawn from the deck again,
-  // so they are revealed face-up under dimmed/desaturated styling (.seat-folded)
-  const isHero = false;
-  const godMode = false;
-  const street: string = "turn";
-  const showCards = isHero || godMode || bobSeat.folded || street === "showdown" || street === "complete";
+  const getShowCards = (isHero: boolean, godMode: boolean, street: string, seatFolded: boolean) =>
+    isHero || godMode || (!seatFolded && (street === "showdown" || street === "complete"));
 
-  assert.equal(showCards, true, "Folded player cards must be shown rather than hidden");
+  // 1. In other players' perspective (isHero = false, godMode = false), folded cards must remain face-down
+  assert.equal(
+    getShowCards(false, false, "turn", bobSeat.folded),
+    false,
+    "Folded player cards must remain face-down from other players' perspective during turn"
+  );
+  assert.equal(
+    getShowCards(false, false, "showdown", bobSeat.folded),
+    false,
+    "Folded player cards must remain face-down from other players' perspective even at showdown"
+  );
+  assert.equal(
+    getShowCards(false, false, "complete", bobSeat.folded),
+    false,
+    "Folded player cards must remain face-down from other players' perspective when hand completes"
+  );
+
+  // 2. In the folding player's own perspective (isHero = true), they can still see their own hole cards
+  assert.equal(
+    getShowCards(true, false, "turn", bobSeat.folded),
+    true,
+    "Hero can still see their own hole cards after folding"
+  );
+
+  // 3. In god mode, all cards are visible to spectator
+  assert.equal(
+    getShowCards(false, true, "turn", bobSeat.folded),
+    true,
+    "God mode spectator can see folded cards"
+  );
+
+  // 4. Active non-folded players have cards revealed at showdown
+  assert.equal(
+    getShowCards(false, false, "showdown", false),
+    true,
+    "Active contenders have cards revealed at showdown"
+  );
+
+  // 5. Folded player retains their two dead cards in memory/seat data
   assert.equal(bobSeat.holeCards.length, 2, "Folded player retains their two dead cards");
+
+  // 6. PokerTrainer single-player visibility: hidden = !seat.isHuman && !reveal
+  const isCardHidden = (isHuman: boolean, reveal: boolean) => !isHuman && !reveal;
+  assert.equal(isCardHidden(false, false), true, "Bot's cards remain hidden after folding");
+  assert.equal(isCardHidden(true, false), false, "Hero's cards remain visible after folding");
+  assert.equal(isCardHidden(false, true), false, "Bot's cards are visible in revealAll mode");
 });

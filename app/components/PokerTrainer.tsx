@@ -425,7 +425,7 @@ function Seat({
             <CardFace
               key={card.id}
               card={card}
-              hidden={!seat.isHuman && !reveal && !seat.folded}
+              hidden={!seat.isHuman && !reveal}
               small
             />
           ))}

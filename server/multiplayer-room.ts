@@ -1022,8 +1022,8 @@ export class MultiplayerRoom {
       // Determine visible hole cards:
       // - If client is hero: reveal own hole cards
       // - If client is spectator AND godMode: reveal all cards
-      // - If game reached showdown/complete: reveal showdown cards
-      // - If player folded: reveal folded cards (they are dead cards and will not be drawn again)
+      // - If game reached showdown/complete: reveal showdown cards of non-folded contenders
+      // - If player folded: keep folded cards hidden from other players (dead cards remain private)
       const isShowdown =
         (this.gameState?.street === "showdown" || this.gameState?.status === "complete") &&
         (this.gameState?.lastResult ? this.gameState.lastResult.showdown : true);
@@ -1031,8 +1031,8 @@ export class MultiplayerRoom {
       let holeCards = (gameSeat?.holeCards ?? []).map((c) => ({ ...c }));
 
       if (!isHero && !godMode) {
-        if (!isShowdown && !isFolded) {
-          // Mask other active players' hole cards if hand is still in progress and they have not folded
+        if (!isShowdown || isFolded) {
+          // Mask other players' hole cards if hand is still in progress or if the player folded
           holeCards = [];
         }
       }
