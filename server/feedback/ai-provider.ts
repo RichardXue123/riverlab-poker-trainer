@@ -30,6 +30,10 @@ export function resolveAgyCommand(explicitCommand?: string): string {
   // On Windows, if agy is not in PATH, look up default location in user profile
   if (process.platform === "win32") {
     const userProfile = process.env.USERPROFILE || "";
+    const appDataAgy = path.join(userProfile, "AppData", "Local", "agy", "bin", "agy.exe");
+    if (fs.existsSync(appDataAgy)) {
+      return appDataAgy;
+    }
     const defaultAgyExe = path.join(userProfile, ".gemini", "bin", "agy.exe");
     if (fs.existsSync(defaultAgyExe)) {
       return defaultAgyExe;
@@ -59,17 +63,23 @@ export class AgyCliProvider implements AiFixProvider {
       args.push("--model", this.settings.model);
     }
 
+    const apiKey = this.settings?.apiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+    const env: NodeJS.ProcessEnv = apiKey ? { ...process.env, GEMINI_API_KEY: apiKey } : process.env;
     const timeoutMs = Number(process.env.AI_FIX_TIMEOUT_MS) || this.settings?.timeoutMs || 45 * 60_000;
     const result = await runProcess(command, args, {
       cwd: context.worktreePath,
       timeoutMs,
       maxOutputBytes: 8_000_000,
+      env,
     });
 
     const rawLog = [result.stdout, result.stderr].filter(Boolean).join("\n\n--- stderr ---\n");
     if (result.timedOut) throw new Error("AGY CLI 执行超时");
     if (result.exitCode !== 0) {
-      throw new Error(`AGY CLI 退出码 ${result.exitCode}：${lastMeaningfulLine(result.stderr || result.stdout)}`);
+      const detail = extractAgyCliErrorDetail();
+      const baseErr = lastMeaningfulLine(result.stderr || result.stdout);
+      const combined = detail && !baseErr.includes(detail) ? `${baseErr} [原因: ${detail}]` : baseErr;
+      throw new Error(`AGY CLI 退出码 ${result.exitCode}：${combined}`);
     }
 
     return {
@@ -120,19 +130,19 @@ export function createAiFixProvider(root?: string, explicitProviderName?: string
   const configuredProvider = explicitProviderName || config?.provider || "agy";
   const provider = (explicitProviderName ? explicitProviderName : (process.env.AI_FIX_PROVIDER || configuredProvider)).trim().toLowerCase();
 
-  if (provider === "agy" || provider === "agy-cli") {
+  if (provider === "agy" || provider === "agy-cli" || provider === "gemini" || provider === "agi") {
     return new AgyCliProvider({
       ...config?.agy,
       timeoutMs: config?.timeoutMs,
     });
   }
-  if (provider === "codex" || provider === "codex-cli") {
+  if (provider === "codex" || provider === "codex-cli" || provider === "gpt") {
     return new CodexCliProvider({
       ...config?.codex,
       timeoutMs: config?.timeoutMs,
     });
   }
-  throw new Error(`未知 AI 修复提供器：${provider}。支持的提供器：agy, codex。请检查 feedback.config.json 或环境变量 AI_FIX_PROVIDER。`);
+  throw new Error(`未知 AI 修复提供器：${provider}。支持的提供器：gemini (agy), gpt (codex)。请检查 feedback.config.json 或环境变量 AI_FIX_PROVIDER。`);
 }
 
 function buildAgyFixPrompt(feedback: FeedbackRecord): string {
@@ -231,6 +241,26 @@ function extractLastAgentMessage(jsonl: string): string {
     }
   }
   return message.slice(0, 4000);
+}
+
+function extractAgyCliErrorDetail(): string | undefined {
+  try {
+    const userProfile = process.env.USERPROFILE || "";
+    const logPath = path.join(userProfile, ".gemini", "antigravity-cli", "cli.log");
+    if (!fs.existsSync(logPath)) return undefined;
+    const content = fs.readFileSync(logPath, "utf8");
+    const lines = content.split(/\r?\n/).slice(-100);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (line.includes("Error 503") || line.includes("Error 429") || line.includes("Quota exceeded") || line.includes("RESOURCE_EXHAUSTED") || line.includes("UNAVAILABLE") || line.includes("high demand")) {
+        const cleaned = line.replace(/^.*(calling model:|agent executor error:)\s*/i, "").trim();
+        return cleaned.slice(0, 300);
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return undefined;
 }
 
 function lastMeaningfulLine(value: string): string {

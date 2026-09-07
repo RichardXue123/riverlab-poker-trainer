@@ -147,11 +147,11 @@ export default function FeedbackCenter() {
     }
   };
 
-  const currentEngine = (runtime?.provider || "").toLowerCase().includes("codex") ? "codex" : "agi";
+  const currentEngine = (runtime?.provider || "").toLowerCase().includes("codex") || (runtime?.provider || "").toLowerCase().includes("gpt") ? "gpt" : "gemini";
 
-  const selectEngine = async (engine: "codex" | "agi") => {
+  const selectEngine = async (engine: "gpt" | "gemini") => {
     if (!developerKey || busy) return;
-    const providerKey = engine === "agi" ? "agy" : "codex";
+    const providerKey = engine === "gemini" ? "agy" : "codex";
     setBusy(true);
     try {
       await requestJson("/api/feedback/config", {
@@ -168,19 +168,36 @@ export default function FeedbackCenter() {
     }
   };
 
-  const runNow = async () => {
+  const runNow = async (targetId?: string) => {
     if (!developerKey) return;
+    if (runtime && !runtime.autofixEnabled) {
+      window.alert("当前服务器暂未开启CICD");
+      setMessage("当前服务器暂未开启CICD");
+      return;
+    }
     setBusy(true);
     try {
-      await requestJson("/api/feedback/run", { method: "POST", headers: { "x-developer-key": developerKey } });
-      setMessage(`已启动一轮自动修复（使用 ${currentEngine}）；运行期间可以关闭此窗口`);
+      await requestJson("/api/feedback/run", {
+        method: "POST",
+        headers: {
+          "x-developer-key": developerKey,
+          ...(targetId ? { "Content-Type": "application/json" } : {}),
+        },
+        body: targetId ? JSON.stringify({ id: targetId }) : undefined,
+      });
+      setMessage(`已启动自动修复${targetId ? ` [${targetId}]` : ""}（使用 ${currentEngine}）；运行期间可以关闭此窗口`);
       window.setTimeout(() => void load("developer"), 1200);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "启动自动修复失败");
+      const errMsg = error instanceof Error ? error.message : "启动自动修复失败";
+      if (errMsg.includes("当前服务器暂未开启CICD") || errMsg.includes("未开启CICD")) {
+        window.alert("当前服务器暂未开启CICD");
+      }
+      setMessage(errMsg);
     } finally {
       setBusy(false);
     }
   };
+
 
   return (
     <>
@@ -224,7 +241,7 @@ export default function FeedbackCenter() {
                 <div className="feedback-queue-heading">
                   <div><h3>{kind === "player" ? "玩家反馈队列" : "开发者反馈队列"}</h3><p>最新提交排在前面 · 北京时间</p></div>
                   <div className="feedback-queue-actions">
-                    {kind === "developer" && <button type="button" onClick={runNow} disabled={busy || runtime?.running}>{runtime?.running ? "修复运行中" : "立即尝试修复"}</button>}
+                    {kind === "developer" && <button type="button" onClick={() => void runNow()} disabled={busy || runtime?.running}>{runtime?.running ? "修复运行中" : "立即尝试修复"}</button>}
                     <button type="button" onClick={() => void load(kind)} disabled={busy}>刷新</button>
                   </div>
                 </div>
@@ -236,36 +253,38 @@ export default function FeedbackCenter() {
                       <div className="feedback-engine-toggle" role="radiogroup" aria-label="自动修复 AI 引擎">
                         <button
                           type="button"
-                          className={`feedback-engine-btn ${currentEngine === "codex" ? "active codex" : ""}`}
-                          onClick={() => void selectEngine("codex")}
+                          className={`feedback-engine-btn ${currentEngine === "gpt" ? "active gpt codex" : ""}`}
+                          onClick={() => void selectEngine("gpt")}
                           disabled={busy || runtime.running}
-                          aria-checked={currentEngine === "codex"}
+                          aria-checked={currentEngine === "gpt"}
                           role="radio"
-                          title="选择 Codex 自动修复引擎"
+                          title="选择 GPT (Codex) 自动修复引擎"
                         >
-                          codex
+                          gpt
                         </button>
                         <button
                           type="button"
-                          className={`feedback-engine-btn ${currentEngine === "agi" ? "active agi" : ""}`}
-                          onClick={() => void selectEngine("agi")}
+                          className={`feedback-engine-btn ${currentEngine === "gemini" ? "active gemini agi" : ""}`}
+                          onClick={() => void selectEngine("gemini")}
                           disabled={busy || runtime.running}
-                          aria-checked={currentEngine === "agi"}
+                          aria-checked={currentEngine === "gemini"}
                           role="radio"
-                          title="选择 AGI / AGY 自动修复引擎"
+                          title="选择 Gemini (AGY) 自动修复引擎"
                         >
-                          agi
+                          gemini
                         </button>
                       </div>
                     </div>
                     <div className="feedback-runtime-meta">
                       <span className={`feedback-runtime-status ${runtime.running ? "running" : ""}`}>
                         <span className="feedback-status-dot" />
-                        {runtime.running ? "修复运行中" : "等待调度"}
+                        {runtime.running ? "修复运行中" : runtime.autofixEnabled ? "等待调度" : "自动调度未开启"}
                       </span>
-                      {runtime.nextSweepAt && (
+                      {runtime.autofixEnabled && runtime.nextSweepAt ? (
                         <span className="feedback-runtime-next">下次自动执行：{formatBeijingTime(runtime.nextSweepAt)}</span>
-                      )}
+                      ) : !runtime.autofixEnabled ? (
+                        <span className="feedback-runtime-next" title="启动服务器时带参数 --autofix 或 --cicd 即可开启每 5 小时自动轮询">（带参启动可开启自动轮询）</span>
+                      ) : null}
                     </div>
                   </div>
                 )}
@@ -287,6 +306,16 @@ export default function FeedbackCenter() {
                         {developerKey && (
                           <div className="feedback-admin-actions">
                             {item.status === "pending" && (
+                              <button
+                                type="button"
+                                onClick={() => void runNow(item.id)}
+                                disabled={busy || runtime?.running}
+                                title="忽略冷却时间，立即调用 AI 修复此项"
+                              >
+                                立即修复此项
+                              </button>
+                            )}
+                            {item.status === "pending" && (
                               <button type="button" onClick={() => void updateStatus(item.id, "processing")}>
                                 转人工处理
                               </button>
@@ -303,6 +332,7 @@ export default function FeedbackCenter() {
                             )}
                           </div>
                         )}
+
                       </article>
                     ))}
                   </div>

@@ -24,6 +24,7 @@ import type {
   RoomSeatPlayer,
   RoomSpectator,
 } from "./multiplayer-types";
+import { logger } from "./logger";
 
 export class MultiplayerRoom {
   public readonly code: string;
@@ -85,7 +86,10 @@ export class MultiplayerRoom {
       connected: true,
       timeBankCards: this.config.initialTimeBankCards,
     };
+
+    logger.info("ROOM", `MultiplayerRoom initialized. Host: ${hostName} (${hostId})`, `Room:${this.code}`, this.config);
   }
+
 
   public get seatedCount(): number {
     return this.seats.filter((s): s is RoomSeatPlayer => s !== null).length;
@@ -101,6 +105,7 @@ export class MultiplayerRoom {
     if (existingSeat) {
       existingSeat.connected = true;
       existingSeat.name = name || existingSeat.name;
+      logger.info("ROOM", `Player ${existingSeat.name} (${clientId}) reconnected to seat ${existingSeat.seatIndex}`, `Room:${this.code}`);
       this.broadcast();
       return { isHost: existingSeat.isHost, isSpectator: false };
     }
@@ -110,18 +115,21 @@ export class MultiplayerRoom {
       const spec = this.spectators.get(clientId)!;
       spec.connected = true;
       spec.name = name || spec.name;
+      logger.info("ROOM", `Spectator ${spec.name} (${clientId}) reconnected`, `Room:${this.code}`);
       this.broadcast();
       return { isHost: this.hostId === clientId, isSpectator: true };
     }
 
     // If game in progress or asSpectator requested, join as spectator
     if (asSpectator || this.status === "playing") {
+      const specName = name || `观战者 ${this.spectators.size + 1}`;
       this.spectators.set(clientId, {
         id: clientId,
-        name: name || `观战者 ${this.spectators.size + 1}`,
+        name: specName,
         connected: true,
         godMode: false,
       });
+      logger.info("ROOM", `Spectator ${specName} (${clientId}) joined room`, `Room:${this.code}`);
       this.broadcast();
       return { isHost: this.hostId === clientId, isSpectator: true };
     }
@@ -130,9 +138,10 @@ export class MultiplayerRoom {
     const emptyIndex = this.seats.findIndex((s) => s === null);
     if (emptyIndex !== -1) {
       const isHost = this.hostId === clientId;
+      const playerName = name || `玩家 ${emptyIndex + 1}`;
       this.seats[emptyIndex] = {
         id: clientId,
-        name: name || `玩家 ${emptyIndex + 1}`,
+        name: playerName,
         seatIndex: emptyIndex,
         stack: this.config.startingStack,
         isReady: isHost, // Host is ready by default
@@ -140,17 +149,20 @@ export class MultiplayerRoom {
         connected: true,
         timeBankCards: this.config.initialTimeBankCards,
       };
+      logger.info("ROOM", `Player ${playerName} (${clientId}) seated at seat ${emptyIndex} (isHost=${isHost})`, `Room:${this.code}`);
       this.broadcast();
       return { isHost, isSpectator: false };
     }
 
     // Seats are full (8/8), join as spectator
+    const specName = name || `观战者 ${this.spectators.size + 1}`;
     this.spectators.set(clientId, {
       id: clientId,
-      name: name || `观战者 ${this.spectators.size + 1}`,
+      name: specName,
       connected: true,
       godMode: false,
     });
+    logger.info("ROOM", `Seats full, ${specName} (${clientId}) joined as spectator`, `Room:${this.code}`);
     this.broadcast();
     return { isHost: this.hostId === clientId, isSpectator: true };
   }
@@ -161,6 +173,7 @@ export class MultiplayerRoom {
 
     if (seatIndex !== -1) {
       const seat = this.seats[seatIndex]!;
+      logger.info("ROOM", `Player ${seat.name} (${clientId}) left seat ${seatIndex}`, `Room:${this.code}`);
       // If game is playing, fold player in engine
       if (this.gameState && this.gameState.status === "playing") {
         const gameSeat = this.gameState.seats.find((s) => s.id === clientId);
@@ -188,6 +201,7 @@ export class MultiplayerRoom {
     const remainingHumans = this.seats.filter((s): s is RoomSeatPlayer => s !== null && !s.isAi);
     const remainingSpectators = Array.from(this.spectators.values());
     if (remainingHumans.length === 0 && remainingSpectators.length === 0) {
+      logger.info("ROOM", `All human players and spectators left. Room cleaned up.`, `Room:${this.code}`);
       this.cleanup();
       return true;
     }
@@ -212,8 +226,10 @@ export class MultiplayerRoom {
         nextHostSeat.isHost = true;
         nextHostSeat.isReady = true;
         this.hostId = nextHostSeat.id;
+        logger.info("ROOM", `Host auto-transferred to ${nextHostSeat.name} (${nextHostSeat.id}) after previous host left`, `Room:${this.code}`);
       } else if (remainingSpectators.length > 0) {
         this.hostId = remainingSpectators[0].id;
+        logger.info("ROOM", `Host auto-transferred to spectator ${remainingSpectators[0].name} (${remainingSpectators[0].id}) after previous host left`, `Room:${this.code}`);
       }
     }
 
@@ -253,9 +269,11 @@ export class MultiplayerRoom {
     }
 
     this.hostId = targetId;
+    logger.info("ROOM", `Host manually transferred from ${currentHostId} to ${targetId}`, `Room:${this.code}`);
     this.broadcast();
     return { success: true };
   }
+
 
   public isIdleBetweenHands(): boolean {
     return (this.status === "lobby" || this.firstHandPending || this.gameState?.status === "complete") && !this.characterSelectionState?.active;
@@ -288,6 +306,7 @@ export class MultiplayerRoom {
       timeBankCards: this.config.initialTimeBankCards,
     };
 
+    logger.info("ROOM", `Player ${spectator.name} (${clientId}) took seat ${target}`, `Room:${this.code}`);
     this.broadcast();
     return true;
   }
@@ -306,6 +325,7 @@ export class MultiplayerRoom {
       godMode: false,
     });
 
+    logger.info("ROOM", `Player ${seat.name} (${clientId}) stood up from seat ${seatIndex}`, `Room:${this.code}`);
     this.broadcast();
     return true;
   }
@@ -347,6 +367,7 @@ export class MultiplayerRoom {
       isAi: true,
     };
 
+    logger.info("ROOM", `AI bot ${botName} (${botId}) added to seat ${target}`, `Room:${this.code}`);
     this.broadcast();
     return { success: true };
   }
@@ -373,6 +394,7 @@ export class MultiplayerRoom {
       this.gameState.seats = this.gameState.seats.filter((s) => s.id !== seat.id);
     }
 
+    logger.info("ROOM", `AI bot ${seat.name} (${seat.id}) removed from seat ${seatIndex}`, `Room:${this.code}`);
     this.broadcast();
     return { success: true };
   }
@@ -398,6 +420,7 @@ export class MultiplayerRoom {
       countAdded += 1;
     }
 
+    logger.info("ROOM", `Filled ${countAdded} AI bots (target ${target})`, `Room:${this.code}`);
     return { success: true, countAdded };
   }
 
@@ -422,10 +445,12 @@ export class MultiplayerRoom {
     }
 
     if (countRemoved > 0) {
+      logger.info("ROOM", `Cleared ${countRemoved} AI bots`, `Room:${this.code}`);
       this.broadcast();
     }
     return { success: true, countRemoved };
   }
+
 
   public toggleReady(clientId: string): boolean {
     if (this.status === "playing") return false;
@@ -559,6 +584,11 @@ export class MultiplayerRoom {
       return { success: false, error: eligibility.reason };
     }
 
+    logger.info("GAME", `Game started by host ${clientId}`, `Room:${this.code}`, {
+      chaosMode: this.config.chaosMode,
+      seated: this.seatedCount,
+    });
+
     if (this.config.chaosMode) {
       this.status = "playing";
       this.startCharacterSelection();
@@ -621,6 +651,7 @@ export class MultiplayerRoom {
     const thinkingMeta = this.formatThinking(elapsedMs / 1000);
 
     if (actionInput.type === "fold" && this.cannotFoldPlayerIds.has(clientId)) {
+      logger.warn("ACTION", `Action rejected for ${activeSeat.name} (${clientId}): 受到【断魂】封绝，本轮不能弃牌！`, `Room:${this.code}`, { action: actionInput });
       return { success: false, error: "受到【断魂】封绝，本轮不能弃牌！" };
     }
 
@@ -633,11 +664,23 @@ export class MultiplayerRoom {
       this.gameState = applyAction(this.gameState, actionInput, undefined, thinkingMeta);
     } catch (err) {
       this.startTurnTimer();
-      return { success: false, error: err instanceof Error ? err.message : "无效的行动" };
+      const errMsg = err instanceof Error ? err.message : "无效的行动";
+      logger.warn("ACTION", `Action rejected for ${activeSeat.name} (${clientId}): ${errMsg}`, `Room:${this.code}`, { action: actionInput });
+      return { success: false, error: errMsg };
     }
+
+    logger.info("ACTION", `Player ${activeSeat.name} (${clientId}) executed [${actionInput.type}]${actionInput.amount ? ` amount=${actionInput.amount}` : ""}`, `Room:${this.code}`, {
+      action: actionInput,
+      street: this.gameState.street,
+      pot: potSize(this.gameState),
+    });
 
     if (this.gameState.street !== prevStreet) {
       this.cannotFoldPlayerIds.clear();
+      logger.info("GAME", `Street advanced: ${prevStreet} -> ${this.gameState.street}`, `Room:${this.code}`, {
+        board: this.gameState.community.map((c) => `${c.rank}${c.suit}`).join(" "),
+        pot: potSize(this.gameState),
+      });
     }
 
     this.syncPlayerStacks();
@@ -645,6 +688,7 @@ export class MultiplayerRoom {
     this.broadcast();
     return { success: true };
   }
+
 
   public nextHand(clientId?: string): { success: boolean; error?: string } {
     if (clientId && clientId !== this.hostId) {
@@ -757,11 +801,18 @@ export class MultiplayerRoom {
         requireFundedHuman: false,
       });
 
+      logger.info("GAME", `Hand #${this.gameState.handNumber} started`, `Room:${this.code}`, {
+        buttonIndex: this.gameState.buttonIndex,
+        players: currentSeated.map((s) => ({ id: s.id, name: s.name, stack: s.stack, isAi: s.isAi })),
+      });
+
       this.startTurnTimer();
       this.broadcast();
       return { success: true };
     } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : "无法开始下一手" };
+      const errMsg = err instanceof Error ? err.message : "无法开始下一手";
+      logger.warn("GAME", `Failed to start hand #${(this.gameState?.handNumber ?? 0) + 1}: ${errMsg}`, `Room:${this.code}`);
+      return { success: false, error: errMsg };
     }
   }
 
@@ -776,11 +827,13 @@ export class MultiplayerRoom {
           gameSeat.stack = buyIn;
         }
       }
+      logger.info("ROOM", `Player ${seat.name} (${clientId}) rebought for ${buyIn}`, `Room:${this.code}`);
       this.broadcast();
       return true;
     }
     return false;
   }
+
 
   public useSkill(
     clientId: string,
@@ -915,9 +968,17 @@ export class MultiplayerRoom {
       });
     }
 
+    logger.info("CHAOS", `Player ${seat.name} (${clientId}) used skill [${skill.name}]`, `Room:${this.code}`, {
+      skillId,
+      targetPlayerId,
+      targetCardIndex,
+      effectBroadcast,
+    });
     this.broadcast();
+
     return { success: true, broadcastText: effectBroadcast };
   }
+
 
   public buildClientState(clientId: string): MultiplayerTableState {
     const isHost = this.hostId === clientId;
@@ -1314,6 +1375,8 @@ export class MultiplayerRoom {
     const activeSeat = this.gameState.seats[this.gameState.activeIndex];
     if (!activeSeat) return;
 
+    logger.warn("ACTION", `Turn timeout for player ${activeSeat.name} (${activeSeat.id}). Auto-folding.`, `Room:${this.code}`, { elapsedSec });
+
     // Strict auto-fold on thinking time expiration
     const action: PlayerActionInput = { type: "fold" };
     this.timeBankActive = false;
@@ -1324,7 +1387,7 @@ export class MultiplayerRoom {
       this.checkHandCompletion();
       this.broadcast();
     } catch (err) {
-      console.error("[MultiplayerRoom] Auto-fold on timeout failed:", err);
+      logger.error("ACTION", `Auto-fold on timeout failed: ${String(err)}`, `Room:${this.code}`, { clientId: activeSeat.id });
       try {
         activeSeat.folded = true;
         activeSeat.acted = true;
@@ -1339,7 +1402,7 @@ export class MultiplayerRoom {
         this.checkHandCompletion();
         this.broadcast();
       } catch (fallbackErr) {
-        console.error("[MultiplayerRoom] Emergency advance failed:", fallbackErr);
+        logger.error("ACTION", `Emergency advance failed: ${String(fallbackErr)}`, `Room:${this.code}`);
       }
     }
   }
@@ -1359,7 +1422,23 @@ export class MultiplayerRoom {
           ? `（净胜 +${mainWinner.net}）`
           : "";
         this.handResultSummary = `🏆 本手结算：${winnerNames} 赢得了底池 ${pot} 筹码${netStr}！`;
+        logger.info("SETTLE", `Hand #${this.gameState.handNumber} settled: ${this.handResultSummary}`, `Room:${this.code}`, {
+          pot,
+          winners: this.gameState.lastResult.winnerSettlements,
+          settlements: this.gameState.lastResult.playerSettlements,
+        });
+
+        // Zero-sum audit
+        if (this.gameState.lastResult.playerSettlements && this.gameState.lastResult.playerSettlements.length > 0) {
+          const sumNet = this.gameState.lastResult.playerSettlements.reduce((acc, p) => acc + (p.received - p.contributed), 0);
+          if (sumNet !== 0) {
+            logger.error("AUDIT", `CRITICAL: Non-zero-sum settlement detected in Hand #${this.gameState.handNumber}! Net sum diff: ${sumNet}`, `Room:${this.code}`, this.gameState.lastResult.playerSettlements);
+          } else {
+            logger.debug("AUDIT", `Zero-sum settlement verified for Hand #${this.gameState.handNumber} (net sum === 0)`, `Room:${this.code}`);
+          }
+        }
       }
+
 
       // 胡闹德州：一手牌结算触发技能
       if (this.config.chaosMode && this.gameState) {

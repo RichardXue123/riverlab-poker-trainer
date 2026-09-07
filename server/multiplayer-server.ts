@@ -4,6 +4,7 @@ import os from "node:os";
 import { WebSocketServer, WebSocket } from "ws";
 import { MultiplayerRoom } from "./multiplayer-room";
 import type { ClientMessage, RoomConfig, RoomSummary, ServerMessage } from "./multiplayer-types";
+import { logger } from "./logger";
 
 export function getLocalLanIps(): string[] {
   const interfaces = os.networkInterfaces();
@@ -23,6 +24,7 @@ interface ClientSession {
   name: string;
   ws: WebSocket;
   roomCode?: string;
+  ip?: string;
 }
 
 export class MultiplayerServer {
@@ -45,8 +47,8 @@ export class MultiplayerServer {
       }
     });
 
-    wss.on("connection", (ws) => {
-      this.handleConnection(ws);
+    wss.on("connection", (ws, req: IncomingMessage) => {
+      this.handleConnection(ws, req);
     });
   }
 
@@ -54,14 +56,17 @@ export class MultiplayerServer {
     this.port = port;
   }
 
-  private handleConnection(ws: WebSocket): void {
+  private handleConnection(ws: WebSocket, req?: IncomingMessage): void {
     const clientId = `user-${Math.random().toString(36).slice(2, 9)}`;
+    const ip = req?.socket?.remoteAddress || "unknown";
     const session: ClientSession = {
       id: clientId,
       name: "匿名牌友",
       ws,
+      ip,
     };
     this.clients.set(clientId, session);
+    logger.info("WS", `Client connected [${clientId}] from ${ip}`);
 
     // Send initial metadata
     this.send(ws, {
@@ -75,7 +80,8 @@ export class MultiplayerServer {
       let message: ClientMessage;
       try {
         message = JSON.parse(data.toString());
-      } catch (err) {
+      } catch {
+        logger.warn("WS", "Invalid JSON received from client", `Client:${session.id}`);
         this.send(ws, { type: "ERROR", message: "消息格式错误" });
         return;
       }
@@ -83,7 +89,9 @@ export class MultiplayerServer {
       try {
         this.handleClientMessage(session, message);
       } catch (err) {
-        console.error("[MultiplayerServer] Message handler error:", message.type, err);
+        logger.error("WS", `Message handler error for [${message.type}]`, `Client:${session.id}`, {
+          error: err instanceof Error ? err.stack || err.message : String(err),
+        });
         this.send(ws, {
           type: "ERROR",
           message: err instanceof Error ? err.message : "服务器处理异常",
@@ -92,13 +100,15 @@ export class MultiplayerServer {
     });
 
     ws.on("close", () => {
-      this.handleDisconnect(session);
+      this.handleDisconnect(session, "normal close");
     });
 
-    ws.on("error", () => {
-      this.handleDisconnect(session);
+    ws.on("error", (err) => {
+      logger.warn("WS", `Client error [${session.id}]: ${err.message}`, session.roomCode ? `Room:${session.roomCode}` : undefined);
+      this.handleDisconnect(session, "socket error");
     });
   }
+
 
   private handleClientMessage(session: ClientSession, msg: ClientMessage): void {
     const ws = session.ws;
@@ -149,6 +159,7 @@ export class MultiplayerServer {
         );
         this.rooms.set(roomCode, room);
         session.roomCode = roomCode;
+        logger.info("ROOM", `Room created [${roomCode}] by ${session.name} (${session.id})`, `Room:${roomCode}`, { config: msg.config });
 
         this.send(ws, {
           type: "ROOM_JOINED",
@@ -166,6 +177,7 @@ export class MultiplayerServer {
         const code = msg.roomCode?.trim().toUpperCase();
         const room = this.rooms.get(code);
         if (!room) {
+          logger.warn("ROOM", `Join failed: room not found [${code}]`, undefined, { clientId: session.id, name: session.name });
           this.send(ws, { type: "ERROR", message: `未找到房间 [${code}]` });
           return;
         }
@@ -174,6 +186,7 @@ export class MultiplayerServer {
         }
         session.roomCode = code;
         const result = room.join(session.id, session.name, Boolean(msg.asSpectator));
+        logger.info("ROOM", `Client ${session.name} (${session.id}) joined room (host=${result.isHost}, spec=${result.isSpectator})`, `Room:${code}`);
         this.send(ws, {
           type: "ROOM_JOINED",
           roomCode: code,
@@ -215,6 +228,7 @@ export class MultiplayerServer {
         if (room) {
           const res = room.startGame(session.id);
           if (!res.success && res.error) {
+            logger.warn("ROOM", `Start game rejected: ${res.error}`, `Room:${room.code}`, { clientId: session.id });
             this.send(ws, { type: "ERROR", message: res.error });
           }
         }
@@ -225,6 +239,7 @@ export class MultiplayerServer {
         if (room) {
           const res = room.handleAction(session.id, msg.action);
           if (!res.success && res.error) {
+            logger.warn("ACTION", `Action rejected: ${res.error}`, `Room:${room.code}`, { clientId: session.id, action: msg.action });
             this.send(ws, { type: "ERROR", message: res.error });
           }
         }
@@ -235,6 +250,7 @@ export class MultiplayerServer {
         if (room) {
           const res = room.useTimeBank(session.id);
           if (!res.success && res.error) {
+            logger.warn("ROOM", `Use time bank rejected: ${res.error}`, `Room:${room.code}`, { clientId: session.id });
             this.send(ws, { type: "ERROR", message: res.error });
           }
         }
@@ -245,6 +261,7 @@ export class MultiplayerServer {
         if (room) {
           const res = room.toggleChaosMode(session.id, msg.enabled);
           if (!res.success && res.error) {
+            logger.warn("ROOM", `Toggle chaos mode rejected: ${res.error}`, `Room:${room.code}`, { clientId: session.id });
             this.send(ws, { type: "ERROR", message: res.error });
           }
         }
@@ -255,6 +272,7 @@ export class MultiplayerServer {
         if (room) {
           const res = room.selectCharacter(session.id, msg.characterId);
           if (!res.success && res.error) {
+            logger.warn("CHAOS", `Select character rejected: ${res.error}`, `Room:${room.code}`, { clientId: session.id, charId: msg.characterId });
             this.send(ws, { type: "ERROR", message: res.error });
           }
         }
@@ -265,6 +283,7 @@ export class MultiplayerServer {
         if (room) {
           const res = room.useSkill(session.id, msg.skillId, msg.targetPlayerId, msg.targetCardIndex);
           if (!res.success && res.error) {
+            logger.warn("CHAOS", `Use skill rejected: ${res.error}`, `Room:${room.code}`, { clientId: session.id, skillId: msg.skillId });
             this.send(ws, { type: "ERROR", message: res.error });
           }
         }
@@ -275,6 +294,7 @@ export class MultiplayerServer {
         if (room) {
           const res = room.nextHand(session.id);
           if (!res.success && res.error) {
+            logger.warn("ROOM", `Next hand rejected: ${res.error}`, `Room:${room.code}`, { clientId: session.id });
             this.send(ws, { type: "ERROR", message: res.error });
           }
         }
@@ -299,6 +319,7 @@ export class MultiplayerServer {
         if (room) {
           const res = room.transferHost(session.id, msg.targetPlayerId);
           if (!res.success && res.error) {
+            logger.warn("ROOM", `Transfer host rejected: ${res.error}`, `Room:${room.code}`, { clientId: session.id, target: msg.targetPlayerId });
             this.send(ws, { type: "ERROR", message: res.error });
           }
         }
@@ -309,6 +330,7 @@ export class MultiplayerServer {
         if (room) {
           const res = room.addAiBot(session.id, msg.seatIndex);
           if (!res.success && res.error) {
+            logger.warn("ROOM", `Add AI bot rejected: ${res.error}`, `Room:${room.code}`, { clientId: session.id, seat: msg.seatIndex });
             this.send(ws, { type: "ERROR", message: res.error });
           }
         }
@@ -319,6 +341,7 @@ export class MultiplayerServer {
         if (room) {
           const res = room.removeAiBot(session.id, msg.seatIndex);
           if (!res.success && res.error) {
+            logger.warn("ROOM", `Remove AI bot rejected: ${res.error}`, `Room:${room.code}`, { clientId: session.id, seat: msg.seatIndex });
             this.send(ws, { type: "ERROR", message: res.error });
           }
         }
@@ -329,6 +352,7 @@ export class MultiplayerServer {
         if (room) {
           const res = room.fillAiBots(session.id, msg.targetCount);
           if (!res.success && res.error) {
+            logger.warn("ROOM", `Fill AI bots rejected: ${res.error}`, `Room:${room.code}`, { clientId: session.id });
             this.send(ws, { type: "ERROR", message: res.error });
           }
         }
@@ -339,6 +363,7 @@ export class MultiplayerServer {
         if (room) {
           const res = room.clearAllAiBots(session.id);
           if (!res.success && res.error) {
+            logger.warn("ROOM", `Clear AI bots rejected: ${res.error}`, `Room:${room.code}`, { clientId: session.id });
             this.send(ws, { type: "ERROR", message: res.error });
           }
         }
@@ -350,21 +375,26 @@ export class MultiplayerServer {
   private leaveCurrentRoom(session: ClientSession): void {
     if (!session.roomCode) return;
     const room = this.rooms.get(session.roomCode);
+    const roomCode = session.roomCode;
     session.roomCode = undefined;
     if (room) {
       const isEmpty = room.leave(session.id);
+      logger.info("ROOM", `Client ${session.name} (${session.id}) left room`, `Room:${roomCode}`, { isEmpty });
       if (isEmpty) {
         this.rooms.delete(room.code);
+        logger.info("ROOM", `Room disbanded: ${roomCode}`, `Room:${roomCode}`);
       } else {
         this.broadcastRoom(room);
       }
     }
   }
 
-  private handleDisconnect(session: ClientSession): void {
+  private handleDisconnect(session: ClientSession, reason = "connection closed"): void {
+    logger.info("WS", `Client disconnected [${session.id}] (${session.name}) - ${reason}`, session.roomCode ? `Room:${session.roomCode}` : undefined);
     this.leaveCurrentRoom(session);
     this.clients.delete(session.id);
   }
+
 
   private getRoomForSession(session: ClientSession): MultiplayerRoom | undefined {
     if (!session.roomCode) {

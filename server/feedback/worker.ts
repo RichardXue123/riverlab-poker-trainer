@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { FeedbackRuntimeInfo } from "../../lib/feedback/types";
-import type { FixProviderKind } from "./config";
+import { type FixProviderKind, isAutofixEnabled } from "./config";
 import { type AiFixProvider, createAiFixProvider } from "./ai-provider";
 import type { FeedbackRepository } from "./repository";
 import { runProcess } from "./process";
+import { logger } from "../logger";
 
 const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 const RETRY_DELAY_MS = 5 * 60 * 60 * 1000;
@@ -35,9 +36,11 @@ export class FeedbackFixWorker {
     }
   }
 
-  start(): void {
-    if (this.started || process.env.FEEDBACK_AUTOFIX_ENABLED === "false") return;
+  start(force?: boolean): void {
+    if (this.started) return;
+    if (!force && !isAutofixEnabled()) return;
     this.started = true;
+    logger.info("CICD", "Feedback fix worker started", undefined, { autofixEnabled: isAutofixEnabled() });
     const lastSweepAt = this.repository.getLastSweepAt();
     if (!lastSweepAt) {
       const now = new Date().toISOString();
@@ -53,12 +56,14 @@ export class FeedbackFixWorker {
     this.started = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
+    logger.info("CICD", "Feedback fix worker stopped");
   }
 
   info(): FeedbackRuntimeInfo {
     return {
       provider: this.getProvider().name,
       running: this.running,
+      autofixEnabled: isAutofixEnabled(),
       lastSweepAt: this.repository.getLastSweepAt(),
       nextSweepAt: this.nextSweepAt,
     };
@@ -84,6 +89,7 @@ export class FeedbackFixWorker {
       return;
     }
     this.running = true;
+    logger.info("CICD", `Feedback sweep started (scheduled=${scheduled}, targetId=${targetId || "oldest"})`, targetId);
     if (scheduled) this.repository.setLastSweepAt(new Date().toISOString());
     try {
       if (targetId && targetProvider) {
@@ -91,8 +97,13 @@ export class FeedbackFixWorker {
       }
       const feedback = targetId
         ? this.repository.claimDeveloperById(targetId)
-        : this.repository.claimOldestDeveloper();
-      if (feedback) await this.processFeedback(feedback.id, targetProvider);
+        : this.repository.claimOldestDeveloper(new Date(), !scheduled);
+      if (feedback) {
+        await this.processFeedback(feedback.id, targetProvider);
+      } else {
+        logger.info("CICD", `No claimable feedback found in queue (target=${targetId || "oldest"}, scheduled=${scheduled})`);
+      }
+
     } finally {
       this.running = false;
       if (scheduled) this.schedule(FIVE_HOURS_MS);
@@ -110,11 +121,14 @@ export class FeedbackFixWorker {
     const branchName = await this.uniqueBranchName(feedback.id);
     let worktreeCreated = false;
 
+    logger.info("CICD", `Processing feedback [${id}] (attempt #${feedback.attempts + 1}) on branch ${branchName}`, id);
+
     try {
       await this.mustRun("git", ["worktree", "add", "-b", branchName, worktreePath, "HEAD"], this.root, 2 * 60_000);
       worktreeCreated = true;
 
       const activeProvider = this.getProvider(preferredProvider);
+      logger.info("CICD", `Invoking AI fix provider [${activeProvider.name}] for [${id}]`, id);
       const aiResult = await activeProvider.run({ feedback, worktreePath });
       fs.writeFileSync(path.join(logsDir, `attempt-${feedback.attempts}-ai.log`), aiResult.rawLog, "utf8");
 
@@ -128,6 +142,7 @@ export class FeedbackFixWorker {
       ] as const;
       const checkSummaries: string[] = [];
       for (const [command, args] of checks) {
+        logger.info("CICD", `Running validation check: ${command} ${args.join(" ")}`, id);
         const result = await this.mustRun(command, [...args], worktreePath, 20 * 60_000);
         checkSummaries.push(`${command} ${args.join(" ")}：通过`);
         fs.writeFileSync(path.join(logsDir, `attempt-${feedback.attempts}-${args.at(-1)}.log`), `${result.stdout}\n${result.stderr}`, "utf8");
@@ -136,15 +151,22 @@ export class FeedbackFixWorker {
       await this.mustRun("git", ["add", "-A"], worktreePath, 30_000);
       await this.mustRun("git", ["-c", "user.name=RiverLab Auto Fix", "-c", "user.email=riverlab-autofix@local", "commit", "-m", `fix: resolve ${feedback.id}`], worktreePath, 2 * 60_000);
       const commit = await this.mustRun("git", ["rev-parse", "HEAD"], worktreePath, 30_000);
+      const commitHash = commit.stdout.trim();
+      logger.info("CICD", `Feedback [${id}] fix committed successfully (${commitHash}) on ${branchName}`, id, {
+        commitHash,
+        provider: activeProvider.name,
+      });
+
       this.repository.markAwaitingReview(feedback.id, {
         branchName,
-        commitHash: commit.stdout.trim(),
+        commitHash,
         aiProvider: activeProvider.name,
         aiSummary: aiResult.summary,
         testSummary: checkSummaries.join("；"),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      logger.error("CICD", `Feedback [${id}] auto-fix failed: ${message}`, id);
       if (worktreeCreated) {
         const diff = await runProcess("git", ["diff", "--binary", "HEAD"], { cwd: worktreePath, timeoutMs: 30_000, maxOutputBytes: 5_000_000 }).catch(() => undefined);
         if (diff?.stdout) fs.writeFileSync(path.join(logsDir, `attempt-${feedback.attempts}-failure.patch`), diff.stdout, "utf8");
@@ -160,6 +182,7 @@ export class FeedbackFixWorker {
       }
     }
   }
+
 
   private async uniqueBranchName(feedbackId: string): Promise<string> {
     const formatter = new Intl.DateTimeFormat("en-CA", {

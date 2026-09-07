@@ -41,7 +41,7 @@ npm run dev:local
 
 ## 反馈与本机自动修复
 
-网页右下角的“反馈”入口包含玩家反馈和开发者反馈两个独立队列。开发者队列默认使用纯数字密钥 `2026`，可通过环境变量 `FEEDBACK_DEVELOPER_KEY` 修改。反馈保存在本机 `data/feedback.json`，该目录不会提交到 Git。
+网页右下角的“反馈”入口包含玩家反馈和开发者反馈两个独立队列。开发者队列默认使用纯数字密钥 `2026`，可通过环境变量 `FEEDBACK_DEVELOPER_KEY` 修改。反馈保存在独立的 `feedback/feedback.json`，已纳入 Git 版本控制（执行过程的临时日志在 `feedback/feedback-logs/` 中被忽略）。
 
 服务器运行期间，自动修复执行器每五小时领取一条最早的未处理开发者反馈，并在 `.feedback-worktrees/` 的隔离 Git worktree 中调用 AI CLI。支持 **AGY (Antigravity CLI)** 和 **Codex CLI** 两种修复引擎。修复只有在测试、类型检查和构建全部通过后才会提交到 `CICD_MMDD_HHmm_bugfix` 分支，并保持“处理中”状态等待人工验收。系统不会自动推送、合并、部署或重启服务器。
 
@@ -66,23 +66,49 @@ npm run dev:local
 ```
 
 - **切换引擎方式**：
-  1. **前端界面一键切换**：在网页右下角反馈中心输入开发者密钥解锁后，状态栏显示当前 AI 引擎，点击按钮即可在 `AGY` 与 `Codex` 之间一键切换（自动同步写入 `feedback.config.json`）。
-  2. **修改项目配置文件**：直接编辑 `feedback.config.json` 中的 `"provider": "agy"` 或 `"provider": "codex"`，修改后无需重启服务器，下一轮调度或“立即尝试修复”会即时生效。
-  3. **环境变量覆盖**：设置 `AI_FIX_PROVIDER=agy` 或 `AI_FIX_PROVIDER=codex`（优先级最高）。
+  1. **前端界面一键切换**：在网页右下角反馈中心输入开发者密钥解锁后，状态栏显示当前 AI 引擎，点击按钮即可在 `gemini` 与 `gpt` 之间一键切换（自动同步写入 `feedback.config.json`）。
+  2. **修改项目配置文件**：直接编辑 `feedback.config.json` 中的 `"provider": "agy"` (或 `"gemini"`) 或 `"provider": "codex"` (或 `"gpt"`)，修改后无需重启服务器，下一轮调度或“立即尝试修复”会即时生效。
+  3. **环境变量覆盖**：设置 `AI_FIX_PROVIDER=gemini` 或 `AI_FIX_PROVIDER=gpt`（优先级最高）。
 
 可用环境变量：
 
-- `AI_FIX_PROVIDER=agy`：强制指定 AI 适配器（`agy` 或 `codex`）；优先级高于配置文件。
-- `AI_FIX_AGY_COMMAND=agy`：AGY CLI 命令或完整路径（Windows 下会自动自动检测 `~/.gemini/bin/agy.exe`）。
-- `AI_FIX_CODEX_COMMAND=codex`：Codex CLI 命令或完整路径。
+- `AI_FIX_PROVIDER=gemini`：强制指定 AI 适配器（`gemini` / `agy` 或 `gpt` / `codex`）；优先级高于配置文件。
+- `AI_FIX_AGY_COMMAND=agy`：Gemini (AGY) CLI 命令或完整路径（Windows 下会自动检测 `~/.gemini/bin/agy.exe`）。
+- `AI_FIX_CODEX_COMMAND=codex`：GPT (Codex) CLI 命令或完整路径。
 - `AI_FIX_TIMEOUT_MS=2700000`：单次 AI 调用超时毫秒数。
 - `FEEDBACK_CONFIG_PATH=<路径>`：自定义配置文件路径（默认 `<项目根目录>/feedback.config.json`）。
-- `FEEDBACK_AUTOFIX_ENABLED=false`：关闭定时自动修复，反馈功能仍可使用。
+- `FEEDBACK_AUTOFIX_ENABLED=true`：显式开启定时自动修复（默认关闭，需带参启动生效）。
 - `FEEDBACK_DATA_DIR=<目录>`：修改反馈数据与执行日志的保存位置。
 
-开发者队列中的“立即尝试修复”可手动触发一轮。连续失败三次的反馈会暂停自动重试，重新打开后才会再次进入队列。
+### 启动命令与自动修复（CICD）参数控制
 
-正式运行时先执行 `npm run build`，再执行 `npm start`。项目提供的统一正式服务器会同时加载网页、联机 WebSocket、反馈 API 和自动修复调度器，默认监听 `4311` 端口。请使用该命令，而不是构建日志中通用的 `node dist/standalone/server.js`，后者不会加载本机反馈与联机服务。
+默认启动命令**不会开启后台定时自动修复**，只有在启动时传入参数或使用专用脚本才会启动 5 小时自动轮询流水线：
+
+- **普通启动（不执行自动修复）**：
+  ```powershell
+  npm run dev:local
+  ```
+- **带参数启动（开启自动修复 CICD）**：
+  ```powershell
+  # 方式 1：使用快捷脚本（推荐）
+  npm run dev:cicd
+
+  # 方式 2：CLI 参数传递
+  npm run dev:local -- --autofix
+  # 或
+  npm run dev:local -- --cicd
+
+  # 方式 3：环境变量
+  $env:FEEDBACK_AUTOFIX_ENABLED="true"; npm run dev:local
+  ```
+- **生产服务器带参启动**：
+  ```powershell
+  npm run build
+  npm run start:cicd    # 开启自动修复
+  # 或普通启动：npm start
+  ```
+
+开发者队列中的“立即尝试修复”可随时在前端手动触发一轮。连续失败三次的反馈会暂停自动重试，重新打开后才会再次进入队列。
 
 ## 免责声明
 

@@ -48,9 +48,12 @@ riverlab-poker-trainer/
 │   │   ├── TimeBank Theme.flac    # 延时卡生效中的紧迫旋律 (TimeBank)
 │   │   └── Settlement Theme.flac  # 亮牌结算与底池分配 (Settlement)
 │   └── sounds/                    # 筹码滑动、发牌等高保真音效
-├── tests/                         # 50 项完备的单元与集成自动化测试
+├── feedback/                      # 反馈系统数据（已纳入 Git 版本控制，支持跨设备同步）
+│   └── feedback.json              # 玩家与开发者反馈数据及调度状态
+├── tests/                         # 79 项完备的单元与集成自动化测试
 │   ├── bgm-stage.test.ts          # BGM 阶段流转与状态映射测试
 │   ├── multiplayer-room.test.ts   # 联机房间发牌、房主控制、加时卡、防作弊测试
+│   ├── feedback.test.ts           # 反馈队列、AI 提供器解析与自动修复测试
 │   └── *.test.ts                  # 牌型大小、旁注分池、全员结算盈亏与零和守恒、AI 演化测试
 ├── vite.config.ts                 # Vite 配置文件，挂载 WebSocket 插件与网络安全配置
 └── package.json                   # 项目依赖与启动脚本
@@ -121,6 +124,27 @@ riverlab-poker-trainer/
   - **历史时间轴 (`.timeline`)**：右侧行动记录栏中，每个玩家的行动项均附带思考时间徽章（常规思考为微透灰底，深度思考为醒目金黄色脉冲光效徽章）。
   - **座位动作徽章 (`.seat-action`)**：牌桌玩家座位右上方动作标签（如 `跟注 · 已思考5s` 或 `弃牌 · 已深度思考20s`）同步显示思考时长，并在深度思考时赋予琥珀金边框高亮。
 
+### 3.6 服务端单流日志架构与排障规范 (`server/logger.ts`)
+
+- **日志存储策略与拆分时机**：
+  - **单流集中记录**：所有核心服务模块（HTTP、WebSocket、房间生命周期、游戏进程、结算对账、CICD 运维）均统一写入 `logs/` 目录，单流顺序沉淀，杜绝按房间或模块分散成碎片文件。
+  - **自然日滚动（Daily Rolling）**：以东八区（Asia/Shanghai 北京时间）自然日拆分主文件，文件名为 `server-YYYY-MM-DD.log`（例如 `server-2026-09-07.log`）。
+  - **体积兜底切分（10MB Volume Rotation）**：若单个自然日日志超大（>10MB），自动按卷拆分递增：`server-YYYY-MM-DD.1.log`、`server-YYYY-MM-DD.2.log`。
+  - **零外部依赖**：纯基于 Node.js 原生模块 (`node:fs`, `node:path`, `Intl.DateTimeFormat`) 实现，高性能低开销。
+  - **版本控制隔离**：`/logs/` 目录已严格配置在 `.gitignore` 中，杜绝提交 Git 仓库。
+- **日志标准结构与格式**：
+  ```text
+  [YYYY-MM-DD HH:mm:ss.SSS] [LEVEL] [TAG] [CONTEXT] 消息内容 | JSON序列化数据
+  ```
+  - **时间戳**：精准到毫秒的东八区北京时间。
+  - **日志级别**：`DEBUG`, `INFO `, `WARN `, `ERROR`（固定对齐）。
+  - **模块分类 TAG**：`SYS` (服务进程), `WS` (网络层), `ROOM` (房间管理), `GAME` (游戏进程/下注/转轮), `ACTION` (玩家动作), `SETTLE` (结算), `AUDIT` (数学对账), `CHAOS` (胡闹技), `CICD` (自动修复), `FEEDBACK` (用户反馈)。
+  - **上下文 CONTEXT**：清晰标识关联实体，如 `[Room:8842]`、`[Client:user-xyz]`、`[F000012]`。
+- **关键排障埋点**：
+  - `[ACTION:REJECTED]`：当玩家行动被拒绝时，输出详细玩家身份、动作详情和错误原因，快速定位前后端状态失步。
+  - `[CRITICAL_AUDIT]`：每局结算时严格校验 `sum(net) === 0`，一旦发现非零和分池异常立即触发 ERROR 审计告警。
+  - `[TIMEOUT]`：精准记录超时弃牌玩家及思考用时。
+
 ---
 
 ## 4. 关键硬性规范与避坑法则（AI 必读）
@@ -131,11 +155,12 @@ riverlab-poker-trainer/
 2. **Vite 跨域与网络配置 (`vite.config.ts`)**：
    - 必须保留 `server.cors: true`、`server.allowedHosts: true` 以及 `server.hmr: { clientPort: 4311 }`。否则远程客户端拉取 `@id/__x00__virtual:...` 动态模块时会被拦截，导致 React 无法水合。
 3. **保持测试 100% 通过**：
-   - 任何涉及扑克引擎、房间状态机、BGM 解析器的改动，修改后必须执行：
+   - 任何涉及扑克引擎、房间状态机、BGM 解析器、Logger 的改动，修改后必须执行：
      ```bash
      npm run check
      npm test
      ```
-   - 确保 41 项测试全部 Pass，无任何类型报错。
+   - 确保 85 项自动化测试全部 Pass，无任何类型报错。
 4. **UI 一致性法则**：
    - 多人模式牌桌必须与单人模式牌桌保持完全一致的排版结构：顶部状态栏 `.table-topbar`、主绿呢绒擂台 `.felt-table`、底部操作台 `.action-dock` 以及右侧分析栏 `.side-panel`。
+

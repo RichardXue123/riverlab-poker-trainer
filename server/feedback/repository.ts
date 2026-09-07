@@ -21,8 +21,9 @@ export interface FeedbackRepository {
   create(input: CreateFeedbackInput): FeedbackRecord;
   updateStatus(id: string, status: FeedbackStatus): FeedbackRecord | undefined;
   updateTargetProvider(id: string, targetProvider: "agy" | "codex"): FeedbackRecord | undefined;
-  claimOldestDeveloper(now?: Date): FeedbackRecord | undefined;
+  claimOldestDeveloper(now?: Date, forceImmediate?: boolean): FeedbackRecord | undefined;
   claimDeveloperById(id: string, now?: Date): FeedbackRecord | undefined;
+
   markAwaitingReview(id: string, result: Pick<FeedbackRecord, "branchName" | "commitHash" | "aiProvider" | "aiSummary" | "testSummary">): FeedbackRecord | undefined;
   markAttemptFailed(id: string, error: string, retryAt: Date): FeedbackRecord | undefined;
   getLastSweepAt(): string | undefined;
@@ -105,10 +106,10 @@ export class JsonFeedbackRepository implements FeedbackRepository {
     return structuredClone(item);
   }
 
-  claimOldestDeveloper(now = new Date()): FeedbackRecord | undefined {
+  claimOldestDeveloper(now = new Date(), forceImmediate = false): FeedbackRecord | undefined {
     const nowIso = now.toISOString();
     const item = this.store.items
-      .filter((entry) => entry.kind === "developer" && entry.status === "pending" && entry.attempts < 3 && (!entry.nextAttemptAt || entry.nextAttemptAt <= nowIso))
+      .filter((entry) => entry.kind === "developer" && entry.status === "pending" && entry.attempts < 3 && (forceImmediate || !entry.nextAttemptAt || entry.nextAttemptAt <= nowIso))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
     if (!item) return undefined;
     item.status = "processing";
@@ -116,6 +117,7 @@ export class JsonFeedbackRepository implements FeedbackRepository {
     item.attempts += 1;
     item.updatedAt = nowIso;
     delete item.lastError;
+    delete item.nextAttemptAt;
     this.persist();
     return structuredClone(item);
   }
@@ -129,9 +131,11 @@ export class JsonFeedbackRepository implements FeedbackRepository {
     item.attempts += 1;
     item.updatedAt = nowIso;
     delete item.lastError;
+    delete item.nextAttemptAt;
     this.persist();
     return structuredClone(item);
   }
+
 
   markAwaitingReview(id: string, result: Pick<FeedbackRecord, "branchName" | "commitHash" | "aiProvider" | "aiSummary" | "testSummary">): FeedbackRecord | undefined {
     const item = this.store.items.find((entry) => entry.id === id);

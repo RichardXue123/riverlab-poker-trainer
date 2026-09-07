@@ -2,8 +2,9 @@ import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { FeedbackKind, FeedbackStatus } from "../../lib/feedback/types";
 import { createAiFixProvider } from "./ai-provider";
-import { type FixProviderKind, loadFeedbackConfig, saveFeedbackConfig } from "./config";
+import { type FixProviderKind, isAutofixEnabled, loadFeedbackConfig, saveFeedbackConfig } from "./config";
 import type { FeedbackRuntime } from "./runtime";
+import { logger } from "../logger";
 
 type Next = (error?: unknown) => void;
 
@@ -33,7 +34,9 @@ export function createFeedbackMiddleware(runtime: FeedbackRuntime) {
         const playerName = cleanText(body.playerName, 24, "玩家名字");
         const content = cleanText(body.content, 4000, "反馈内容", 2);
         const targetProvider = parseTargetProvider(body.targetProvider);
-        return sendJson(res, 201, { item: runtime.repository.create({ kind, playerName, content, targetProvider }) });
+        const item = runtime.repository.create({ kind, playerName, content, targetProvider });
+        logger.info("FEEDBACK", `New feedback submitted [${item.id}] by ${playerName} (${kind})`, item.id, { targetProvider });
+        return sendJson(res, 201, { item });
       }
 
       if (req.method === "GET" && url.pathname === "/api/feedback/runtime") {
@@ -43,10 +46,12 @@ export function createFeedbackMiddleware(runtime: FeedbackRuntime) {
 
       if (req.method === "POST" && url.pathname === "/api/feedback/run") {
         if (!authorize(req, res)) return;
+        if (!isAutofixEnabled()) return sendError(res, 403, "当前服务器暂未开启CICD");
         if (runtime.worker.info().running) return sendError(res, 409, "已有自动修复任务正在运行");
         const body = await readJson(req).catch(() => ({})) as { id?: unknown; targetProvider?: unknown };
         const feedbackId = typeof body?.id === "string" && /^F\d{6}$/.test(body.id) ? body.id : undefined;
         const targetProvider = parseTargetProvider(body?.targetProvider);
+        logger.info("CICD", `Manual run requested for [${feedbackId || "oldest"}]`, feedbackId, { targetProvider });
         void runtime.worker.runNow(feedbackId, targetProvider);
         return sendJson(res, 202, { accepted: true, targetId: feedbackId, provider: targetProvider });
       }
@@ -68,21 +73,22 @@ export function createFeedbackMiddleware(runtime: FeedbackRuntime) {
         if (!authorize(req, res)) return;
         const body = await readJson(req) as { provider?: unknown };
         const raw = String(body?.provider || "").trim().toLowerCase();
-        if (!["agy", "codex", "agi", "agy-cli", "codex-cli"].includes(raw)) {
-          return sendError(res, 400, "提供器必须是 'agy' (或 'agi') 或 'codex'");
+        if (!["agy", "codex", "agi", "agy-cli", "codex-cli", "gemini", "gpt"].includes(raw)) {
+          return sendError(res, 400, "提供器必须是 'gemini' (或 'agy') 或 'gpt' (或 'codex')");
         }
-        const targetProvider = (raw === "codex" || raw === "codex-cli") ? "codex" : "agy";
+        const targetProvider = (raw === "codex" || raw === "codex-cli" || raw === "gpt") ? "codex" : "agy";
         const updated = saveFeedbackConfig(runtime.root, { provider: targetProvider });
         if (typeof runtime.worker?.setProvider === "function") {
           runtime.worker.setProvider(targetProvider);
         }
+        logger.info("FEEDBACK", `Feedback fix provider changed to: ${targetProvider}`);
         const activeProvider = typeof runtime.worker?.getProvider === "function"
           ? runtime.worker.getProvider().name
           : createAiFixProvider(runtime.root).name;
         return sendJson(res, 200, {
           config: updated,
           activeProvider,
-          availableProviders: ["agy", "codex"],
+          availableProviders: ["gemini", "gpt", "agy", "codex"],
         });
       }
 
@@ -104,12 +110,14 @@ export function createFeedbackMiddleware(runtime: FeedbackRuntime) {
           const status = parseStatus(body.status);
           item = runtime.repository.updateStatus(match[1], status) || item;
         }
+        logger.info("FEEDBACK", `Feedback [${match[1]}] updated`, match[1], body);
         return sendJson(res, 200, { item });
       }
 
       return sendError(res, 404, "接口不存在");
     } catch (error) {
       const message = error instanceof Error ? error.message : "服务器处理反馈时发生错误";
+      logger.error("HTTP", `Feedback API error on ${url.pathname}: ${message}`, undefined, { error });
       return sendError(res, message.includes("过大") ? 413 : 400, message);
     }
   };
@@ -129,10 +137,12 @@ function authorize(req: IncomingMessage, res: ServerResponse, bodyKey?: unknown)
   const valid = validFormat && safeEqual(supplied, expected);
   if (!valid) {
     consumeRate(failedKeyRates, ip, 12, 10 * 60_000, true);
+    logger.warn("AUTH", `Unauthorized developer API attempt from ${ip}`, undefined, { url: req.url });
     sendError(res, 403, "开发者密钥不正确");
   }
   return valid;
 }
+
 
 function safeEqual(left: string, right: string): boolean {
   const a = Buffer.from(left);
@@ -153,8 +163,8 @@ function parseStatus(value: unknown): FeedbackStatus {
 function parseTargetProvider(value: unknown): "agy" | "codex" | undefined {
   if (typeof value !== "string") return undefined;
   const lower = value.trim().toLowerCase();
-  if (lower === "agy" || lower === "agy-cli") return "agy";
-  if (lower === "codex" || lower === "codex-cli") return "codex";
+  if (lower === "agy" || lower === "agy-cli" || lower === "gemini" || lower === "agi") return "agy";
+  if (lower === "codex" || lower === "codex-cli" || lower === "gpt") return "codex";
   return undefined;
 }
 

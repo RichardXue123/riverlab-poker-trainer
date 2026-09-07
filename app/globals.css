@@ -4264,13 +4264,15 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .feedback-engine-btn:hover:not(:disabled) {
   color: #cbd5e1;
 }
-.feedback-engine-btn.active.codex {
+.feedback-engine-btn.active.codex,
+.feedback-engine-btn.active.gpt {
   color: #f3e8ff;
   background: rgba(168, 85, 247, 0.28);
   border-color: rgba(192, 132, 252, 0.6);
   box-shadow: 0 0 10px rgba(168, 85, 247, 0.3);
 }
-.feedback-engine-btn.active.agi {
+.feedback-engine-btn.active.agi,
+.feedback-engine-btn.active.gemini {
   color: #67e8f9;
   background: rgba(6, 182, 212, 0.28);
   border-color: rgba(34, 211, 238, 0.6);

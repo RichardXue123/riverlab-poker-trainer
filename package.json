@@ -16,6 +16,8 @@
     "select:ai": "tsx training/tournament.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "dev:local": "vinext dev -H 0.0.0.0 -p 4311",
+    "dev:cicd": "vinext dev -H 0.0.0.0 -p 4311 --autofix",
+    "start:cicd": "tsx server/production-server.ts --autofix",
     "check": "tsc --noEmit --skipLibCheck"
   },
   "dependencies": {

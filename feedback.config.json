@@ -4,6 +4,7 @@
   "agy": {
     "command": "agy",
     "mode": "accept-edits",
+    "model": "gemini-3.8-flash-high",
     "effort": "high",
     "dangerouslySkipPermissions": true
   },

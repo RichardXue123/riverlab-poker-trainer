@@ -9,26 +9,58 @@ export interface ProcessResult {
   timedOut: boolean;
 }
 
+export function resolveGitCommand(): string {
+  if (process.platform !== "win32") return "git";
+  if (process.env.GIT_EXEC_PATH && fs.existsSync(process.env.GIT_EXEC_PATH)) return process.env.GIT_EXEC_PATH;
+
+  const userProfile = process.env.USERPROFILE || "";
+  const candidateDirs = [
+    path.join(userProfile, "AppData", "Local", "UGit"),
+    "C:\\Program Files\\Git",
+    "C:\\Program Files (x86)\\Git",
+  ];
+  for (const dir of candidateDirs) {
+    if (!fs.existsSync(dir)) continue;
+    const direct = path.join(dir, "cmd", "git.exe");
+    if (fs.existsSync(direct)) return direct;
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      const appDirs = entries.filter((e) => e.isDirectory() && e.name.startsWith("app-")).sort((a, b) => b.name.localeCompare(a.name));
+      for (const appDir of appDirs) {
+        const ugitExe = path.join(dir, appDir.name, "resources", "app", "git", "cmd", "git.exe");
+        if (fs.existsSync(ugitExe)) return ugitExe;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return "git";
+}
+
 export function runProcess(
   command: string,
   args: string[],
-  options: { cwd: string; stdin?: string; timeoutMs?: number; maxOutputBytes?: number },
+  options: { cwd: string; stdin?: string; timeoutMs?: number; maxOutputBytes?: number; env?: NodeJS.ProcessEnv },
 ): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
     let executable = command;
     let executableArgs = args;
-    if (process.platform === "win32" && command === "npm") {
-      const bundledNpm = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-      const npmCli = process.env.npm_execpath || (fs.existsSync(bundledNpm) ? bundledNpm : "");
-      if (npmCli) {
-        executable = process.execPath;
-        executableArgs = [npmCli, ...args];
+    if (process.platform === "win32") {
+      if (command === "git" || command === "git.exe") {
+        executable = resolveGitCommand();
+      } else if (command === "npm") {
+        const bundledNpm = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+        const npmCli = process.env.npm_execpath || (fs.existsSync(bundledNpm) ? bundledNpm : "");
+        if (npmCli) {
+          executable = process.execPath;
+          executableArgs = [npmCli, ...args];
+        }
       }
     }
     const useShell = process.platform === "win32" && (executable === "npm" || /\.(cmd|bat)$/i.test(executable));
     const child = spawn(executable, executableArgs, {
       cwd: options.cwd,
-      env: process.env,
+      env: options.env ? { ...process.env, ...options.env } : process.env,
       shell: useShell,
       windowsHide: true,
     });

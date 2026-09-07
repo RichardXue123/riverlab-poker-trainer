@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createAiFixProvider, resolveAgyCommand } from "../server/feedback/ai-provider";
-import { saveFeedbackConfig } from "../server/feedback/config";
+import { isAutofixEnabled, saveFeedbackConfig } from "../server/feedback/config";
 import { JsonFeedbackRepository } from "../server/feedback/repository";
 import { FeedbackFixWorker } from "../server/feedback/worker";
 
@@ -113,6 +113,12 @@ test("ai fix provider resolves agy by default and allows switching via feedback.
     assert.equal(worker.info().provider, "codex-cli");
     worker.setProvider("agy");
     assert.equal(worker.info().provider, "agy-cli");
+
+    // 7. gpt and gemini aliases resolve correctly
+    const gptProvider = createAiFixProvider(tempDir, "gpt");
+    assert.equal(gptProvider.name, "codex-cli");
+    const geminiProvider = createAiFixProvider(tempDir, "gemini");
+    assert.equal(geminiProvider.name, "agy-cli");
   } finally {
     if (originalEnv !== undefined) {
       process.env.AI_FIX_PROVIDER = originalEnv;
@@ -145,6 +151,53 @@ test("each developer feedback can have its own designated engine and be claimed 
     assert.equal(claimedFb2?.id, fb2.id);
     assert.equal(claimedFb2?.targetProvider, "codex");
   });
+});
+
+test("isAutofixEnabled defaults to false, enables with CLI flags or environment variables", () => {
+  // 1. Default without args or env
+  assert.equal(isAutofixEnabled([], {}), false);
+  assert.equal(isAutofixEnabled(["node", "vinext", "dev"], {}), false);
+
+  // 2. CLI flags
+  assert.equal(isAutofixEnabled(["node", "vinext", "dev", "--autofix"], {}), true);
+  assert.equal(isAutofixEnabled(["node", "vinext", "dev", "--cicd"], {}), true);
+  assert.equal(isAutofixEnabled(["node", "vinext", "dev", "--enable-autofix"], {}), true);
+  assert.equal(isAutofixEnabled(["node", "vinext", "dev", "--autofix=true"], {}), true);
+  assert.equal(isAutofixEnabled(["node", "vinext", "dev", "--autofix=false"], {}), false);
+
+  // 3. Environment variables
+  assert.equal(isAutofixEnabled([], { FEEDBACK_AUTOFIX_ENABLED: "true" }), true);
+  assert.equal(isAutofixEnabled([], { FEEDBACK_AUTOFIX_ENABLED: "1" }), true);
+  assert.equal(isAutofixEnabled([], { CICD: "true" }), true);
+  assert.equal(isAutofixEnabled([], { AUTOFIX: "true" }), true);
+
+  // 4. Explicit disable overrides flags
+  assert.equal(isAutofixEnabled(["--autofix"], { FEEDBACK_AUTOFIX_ENABLED: "false" }), false);
+});
+
+test("FeedbackFixWorker does not start scheduler when autofix is disabled by default", () => {
+  const originalEnv = process.env.FEEDBACK_AUTOFIX_ENABLED;
+  delete process.env.FEEDBACK_AUTOFIX_ENABLED;
+  const originalArgv = process.argv;
+  process.argv = ["node", "vinext", "dev"];
+
+  withRepository((repository, filePath) => {
+    const worker = new FeedbackFixWorker(path.dirname(filePath), path.dirname(filePath), repository);
+    assert.equal(worker.info().autofixEnabled, false);
+    assert.equal(worker.info().nextSweepAt, undefined);
+
+    worker.start();
+    // Since autofix is disabled, worker.start() does not schedule nextSweepAt
+    assert.equal(worker.info().nextSweepAt, undefined);
+
+    // When forced or started with flag, nextSweepAt is scheduled
+    worker.start(true);
+    assert.ok(worker.info().nextSweepAt);
+    worker.stop();
+  });
+
+  process.argv = originalArgv;
+  if (originalEnv !== undefined) process.env.FEEDBACK_AUTOFIX_ENABLED = originalEnv;
 });
 
 

@@ -6,6 +6,7 @@ export type FixProviderKind = "agy" | "codex";
 export interface AgyProviderSettings {
   command?: string;
   model?: string;
+  apiKey?: string;
   effort?: "low" | "medium" | "high" | string;
   mode?: "accept-edits" | "plan" | string;
   dangerouslySkipPermissions?: boolean;
@@ -38,7 +39,7 @@ export const DEFAULT_FEEDBACK_CONFIG: FeedbackConfigFile = {
 
 export function normalizeProvider(name: unknown): FixProviderKind {
   const str = String(name || "").trim().toLowerCase();
-  if (str === "codex" || str === "codex-cli") return "codex";
+  if (str === "codex" || str === "codex-cli" || str === "gpt") return "codex";
   return "agy";
 }
 
@@ -85,3 +86,43 @@ export function saveFeedbackConfig(root: string, partial: Partial<FeedbackConfig
   fs.writeFileSync(filePath, JSON.stringify(updated, null, 2) + "\n", "utf8");
   return updated;
 }
+
+export function isAutofixEnabled(
+  argv: string[] = process.argv,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  // 1. Explicit environment variable check
+  const envVal = env.FEEDBACK_AUTOFIX_ENABLED?.trim().toLowerCase();
+  if (envVal === "false" || envVal === "0" || envVal === "off" || envVal === "no") return false;
+  if (envVal === "true" || envVal === "1" || envVal === "on" || envVal === "yes") return true;
+
+  if (env.AUTOFIX === "true" || env.AUTOFIX === "1") return true;
+  if (env.CICD === "true" || env.CICD === "1") return true;
+
+  // 2. Command-line argument check (e.g. --autofix, --cicd)
+  const autofixFlags = [
+    "--autofix",
+    "--cicd",
+    "--enable-autofix",
+    "--auto-fix",
+    "-autofix",
+    "-cicd",
+  ];
+
+  for (const raw of argv) {
+    const arg = raw.trim().toLowerCase();
+    if (autofixFlags.includes(arg)) return true;
+    for (const flag of autofixFlags) {
+      if (arg.startsWith(`${flag}=`)) {
+        const val = arg.slice(flag.length + 1);
+        if (val !== "false" && val !== "0" && val !== "off" && val !== "no") {
+          return true;
+        }
+      }
+    }
+  }
+
+  // 3. Default: disabled
+  return false;
+}
+

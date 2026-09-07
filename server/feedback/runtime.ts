@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { createAiFixProvider } from "./ai-provider";
 import { JsonFeedbackRepository } from "./repository";
@@ -8,8 +9,21 @@ export class FeedbackRuntime {
   readonly worker: FeedbackFixWorker;
 
   constructor(readonly root: string) {
-    const dataDir = path.resolve(process.env.FEEDBACK_DATA_DIR || path.join(root, "data"));
-    this.repository = new JsonFeedbackRepository(path.join(dataDir, "feedback.json"));
+    const defaultFeedbackDir = path.join(root, "feedback");
+    const dataDir = path.resolve(process.env.FEEDBACK_DATA_DIR || defaultFeedbackDir);
+
+    const legacyPath = path.join(root, "data", "feedback.json");
+    const targetPath = path.join(dataDir, "feedback.json");
+    if (!fs.existsSync(targetPath) && fs.existsSync(legacyPath)) {
+      try {
+        fs.mkdirSync(dataDir, { recursive: true });
+        fs.copyFileSync(legacyPath, targetPath);
+      } catch {
+        // ignore
+      }
+    }
+
+    this.repository = new JsonFeedbackRepository(targetPath);
     this.worker = new FeedbackFixWorker(root, dataDir, this.repository);
   }
 }

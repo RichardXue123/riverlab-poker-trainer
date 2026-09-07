@@ -29,6 +29,7 @@ export interface FeedbackListResponse {
 export interface FeedbackRuntimeInfo {
   provider: string;
   running: boolean;
+  autofixEnabled?: boolean;
   lastSweepAt?: string;
   nextSweepAt?: string;
 }
