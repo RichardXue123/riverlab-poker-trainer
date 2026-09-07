@@ -16,6 +16,7 @@ import {
   buildBotView,
   buildPlayerView,
   createTable,
+  getVisualSeatIndex,
   potSize,
   startHand,
 } from "@/lib/poker/engine";
@@ -401,8 +402,10 @@ function Seat({
   const seatSettlement = table.status === "complete"
     ? table.lastResult?.playerSettlements?.find((s) => s.playerId === seat.id)
     : undefined;
+  const heroIndex = table.seats.findIndex((s) => s.isHuman);
+  const visualIndex = getVisualSeatIndex(index, heroIndex, table.seats.length);
   return (
-    <div className={`table-seat seat-${index} ${active ? "seat-active" : ""} ${seat.folded ? "seat-folded" : ""} ${eliminated ? "seat-eliminated" : ""}`}>
+    <div className={`table-seat seat-${visualIndex} ${active ? "seat-active" : ""} ${seat.folded ? "seat-folded" : ""} ${eliminated ? "seat-eliminated" : ""}`}>
       {table.status === "complete" && seatSettlement && (
         <div
           className={`seat-settlement-badge ${

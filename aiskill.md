@@ -145,6 +145,15 @@ riverlab-poker-trainer/
   - `[CRITICAL_AUDIT]`：每局结算时严格校验 `sum(net) === 0`，一旦发现非零和分池异常立即触发 ERROR 审计告警。
   - `[TIMEOUT]`：精准记录超时弃牌玩家及思考用时。
 
+### 3.7 第一人称视角牌桌居中与相对顺序保持规范 (Seat Perspective & Auto-Centering)
+
+- **第一人称牌桌居中原则**：
+  - 无论在单人模式还是局域网多人对战中，每个参局玩家在自身屏幕所观察到的牌桌视角，自身座位必须居于牌桌正中央底端（视觉座位 `.seat-0`），以便紧密配合底部操作台 (`.action-dock`) 与手牌交互。
+- **顺时针相对顺序绝对保持 (`lib/poker/engine.ts: getVisualSeatIndex`)**：
+  - 必须严格保持所有玩家（包括空座位）之间的顺时针环形相对位置关系不变。
+  - 映射公式：`visualIndex = (seatIndex - heroSeatIndex + totalSeats) % totalSeats`。
+  - 当观察者为观众或未入座时（`heroSeatIndex = -1`），保持默认绝对物理座位顺序（`visualIndex = seatIndex`）。
+
 ---
 
 ## 4. 关键硬性规范与避坑法则（AI 必读）

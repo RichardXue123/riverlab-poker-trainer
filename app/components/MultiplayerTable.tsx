@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { RANK_SYMBOL, SUIT_SYMBOL } from "@/lib/poker/cards";
 import { GLOSSARY } from "@/lib/poker/coach";
-import { ACTION_LABELS, STREET_LABELS } from "@/lib/poker/engine";
+import { ACTION_LABELS, STREET_LABELS, getVisualSeatIndex } from "@/lib/poker/engine";
 import { evaluateSeven, compareScores } from "@/lib/poker/evaluator";
 import { playPokerSound } from "@/lib/poker/sound";
 import type { Card, PlayerActionInput } from "@/lib/poker/types";
@@ -112,6 +112,9 @@ export default function MultiplayerTable({
   const [activeSkillTargetModal, setActiveSkillTargetModal] = useState<ChaosSkill | null>(null);
 
   const mySeat = state.seats.find((s) => s.id === state.myId);
+  const mySeatIndex = !state.isSpectator
+    ? state.seats.findIndex((s) => s.id === state.myId && !s.id.startsWith("empty-"))
+    : -1;
   const isMyTurn = state.activeIndex >= 0 && state.seats[state.activeIndex]?.id === state.myId;
   const activeSeat = state.activeIndex >= 0 ? state.seats[state.activeIndex] : null;
 
@@ -425,12 +428,13 @@ export default function MultiplayerTable({
             {/* 8 Seats - Exact match of single-player seat styling */}
             {state.seats.map((seat, index) => {
               const isEmpty = !seat.id || seat.id.startsWith("empty-");
+              const visualIndex = getVisualSeatIndex(index, mySeatIndex, state.seats.length);
               if (isEmpty) {
                 if (!isWaitingForHost) return null;
                 return (
                   <div
                     key={`empty-${index}`}
-                    className={`table-seat seat-${index} seat-empty`}
+                    className={`table-seat seat-${visualIndex} seat-empty`}
                   >
                     <div className="seat-empty-panel">
                       <span className="seat-empty-label">座位 {index + 1}</span>
@@ -475,7 +479,7 @@ export default function MultiplayerTable({
               return (
                 <div
                   key={seat.id}
-                  className={`table-seat seat-${index} ${isActive ? "seat-active" : ""} ${
+                  className={`table-seat seat-${visualIndex} ${isActive ? "seat-active" : ""} ${
                     seat.folded ? "seat-folded" : ""
                   }`}
                 >
