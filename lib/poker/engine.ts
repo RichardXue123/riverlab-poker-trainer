@@ -576,3 +576,23 @@ export const STREET_LABELS: Record<Street, string> = {
   showdown: "摊牌 Showdown",
   complete: "牌局结算 Complete",
 };
+
+/**
+ * 牌桌视角座位映射：每个玩家自己的视角都应该在牌桌正中间（视觉座位 0），并保持所有玩家的相对顺序。
+ *
+ * @param seatIndex 逻辑座位索引（0 到 totalSeats - 1）
+ * @param heroSeatIndex 当前观察玩家的逻辑座位索引（观众或未入座为 -1）
+ * @param totalSeats 牌桌总座位数（默认为 8）
+ * @returns 映射后的视觉座位索引（0 到 totalSeats - 1）
+ */
+export function getVisualSeatIndex(
+  seatIndex: number,
+  heroSeatIndex: number,
+  totalSeats: number = 8,
+): number {
+  if (heroSeatIndex < 0 || totalSeats <= 0) {
+    return seatIndex;
+  }
+  return ((seatIndex - heroSeatIndex) % totalSeats + totalSeats) % totalSeats;
+}
+
