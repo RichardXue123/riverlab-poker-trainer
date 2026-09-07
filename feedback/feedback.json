@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "nextId": 5,
+  "nextId": 9,
   "items": [
     {
       "id": "F000001",
@@ -24,9 +24,9 @@
       "playerName": "RichardXue",
       "content": "每个玩家自己的视角都应该在牌桌中间，需要保证玩家的相对顺序",
       "createdAt": "2026-09-07T14:10:19.721Z",
-      "updatedAt": "2026-09-07T15:48:52.007Z",
-      "status": "processing",
-      "statusDetail": "AI 已生成修复，等待人工验收",
+      "updatedAt": "2026-09-07T16:48:57.411Z",
+      "status": "resolved",
+      "statusDetail": "已由开发者确认处理",
       "attempts": 6,
       "branchName": "CICD_0907_2336_bugfix",
       "commitHash": "967a716d53c934653ca2c5cc1bbf9e54d2494d1d",
@@ -46,12 +46,45 @@
       "attempts": 0
     },
     {
-      "id": "F000004",
+      "id": "F000005",
       "kind": "developer",
-      "playerName": "影月",
-      "content": "音乐卡了.视角中心",
-      "createdAt": "2026-09-07T15:19:08.809Z",
-      "updatedAt": "2026-09-07T15:19:08.809Z",
+      "playerName": "RichardXue",
+      "content": "转移房主时，房主相关的操作也要换成新的房主：比如开始新的牌局",
+      "createdAt": "2026-09-07T16:38:11.719Z",
+      "updatedAt": "2026-09-07T16:38:11.719Z",
+      "status": "pending",
+      "statusDetail": "等待自动修复",
+      "attempts": 0
+    },
+    {
+      "id": "F000006",
+      "kind": "developer",
+      "playerName": "RichardXue",
+      "content": "现在联机模式中，如果一个真人玩家耗尽了筹码，提供三种选择：\n不服再战：补充至开始的筹码继续玩；\n观棋不语：进入旁观模式；\n拂袖而去：离开房间。",
+      "createdAt": "2026-09-07T16:40:09.842Z",
+      "updatedAt": "2026-09-07T16:40:09.842Z",
+      "status": "pending",
+      "statusDetail": "等待自动修复",
+      "attempts": 0
+    },
+    {
+      "id": "F000007",
+      "kind": "developer",
+      "playerName": "RichardXue",
+      "content": "房主可以在结算阶段踢走玩家或者ai；注意要考虑到此时玩家可能耗尽了筹码在选择，也会被踢出；",
+      "createdAt": "2026-09-07T16:41:23.888Z",
+      "updatedAt": "2026-09-07T16:41:23.888Z",
+      "status": "pending",
+      "statusDetail": "等待自动修复",
+      "attempts": 0
+    },
+    {
+      "id": "F000008",
+      "kind": "developer",
+      "playerName": "RichardXue",
+      "content": "玩家反馈和开发者反馈增加编辑功能",
+      "createdAt": "2026-09-07T16:41:44.579Z",
+      "updatedAt": "2026-09-07T16:41:44.579Z",
       "status": "pending",
       "statusDetail": "等待自动修复",
       "attempts": 0
