@@ -93,7 +93,7 @@ riverlab-poker-trainer/
   - 激活后：当前回合剩余时间延长，超时定时器重置，BGM 无缝推入 `time-bank.flac`。
 - **防作弊信息隔离（Anti-Cheat Masking）**：
   - 服务端在 `buildClientState(clientId)` 中执行手牌过滤：
-    - 普通在座玩家只能看到自己的两张底牌（`myHoleCards`），其他在座玩家的 `holeCards` 被强制清空为 `[]`（弃牌或 Showdown 结算前）。
+    - 普通在座玩家只能看到自己的两张底牌（`myHoleCards`），其他在座玩家的 `holeCards` 被强制清空为 `[]`（弃牌玩家的手牌对他人始终保持隐藏，非弃牌玩家仅在 Showdown 摊牌时可见）。
     - 仅有开启上帝视角的观战者（`godMode: true`）能看到全员手牌并接收实时胜率矩阵。
 
 ### 3.3 客户端毫秒级倒计时与流光进度条 (`app/components/MultiplayerTable.tsx`)

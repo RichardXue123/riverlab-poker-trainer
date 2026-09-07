@@ -85,6 +85,20 @@ test("enforces 4-8 players and all-ready rule before starting game", () => {
   assert.ok(godSpecState.godModeEquities, "God mode spectator receives real-time equity calculations");
   assert.equal(godSpecState.godModeEquities?.length, 4);
 
+  // When a player folds, their cards must remain hidden from other players (empty array)
+  const hostGameSeat = room.gameState!.seats.find((s) => s.id === "host-1")!;
+  hostGameSeat.folded = true;
+  const p2StateAfterFold = room.buildClientState("p2");
+  const foldedHostSeatInP2View = p2StateAfterFold.seats.find((s) => s.id === "host-1")!;
+  assert.equal(foldedHostSeatInP2View.folded, true);
+  assert.equal(foldedHostSeatInP2View.holeCards.length, 0, "Folded player cards must remain hidden from other players");
+
+  // But the folding player themselves can still see their own cards
+  const hostStateAfterFold = room.buildClientState("host-1");
+  const hostSeatInOwnView = hostStateAfterFold.seats.find((s) => s.id === "host-1")!;
+  assert.equal(hostSeatInOwnView.holeCards.length, 2, "Hero can still see their own hole cards after folding");
+  assert.equal(hostStateAfterFold.myHoleCards.length, 2);
+
   room.cleanup();
 });
 
