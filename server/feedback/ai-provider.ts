@@ -51,64 +51,53 @@ export class AgyCliProvider implements AiFixProvider {
     const command = resolveAgyCommand(this.settings?.command);
     const prompt = buildAgyFixPrompt(context.feedback);
 
-    const modelsToTry: (string | undefined)[] = [
-      this.settings?.model || "Gemini 3.6 Flash (High)",
-      "Gemini 3.6 Flash (High)",
-      "Gemini 3.7 Flash (High)",
-    ].filter((m, i, arr) => m && arr.indexOf(m) === i);
+    const args: string[] = [
+      "-p", prompt,
+      "--mode", this.settings?.mode || "accept-edits",
+      "--dangerously-skip-permissions",
+    ];
+    if (this.settings?.effort && (!this.settings.model || !/\(high|low|medium\)/i.test(this.settings.model))) {
+      args.push("--effort", this.settings.effort);
+    }
+    if (this.settings?.model) {
+      args.push("--model", this.settings.model);
+    }
 
     const apiKey = this.settings?.apiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
     const env: NodeJS.ProcessEnv = apiKey ? { ...process.env, GEMINI_API_KEY: apiKey } : process.env;
     const timeoutMs = Number(process.env.AI_FIX_TIMEOUT_MS) || this.settings?.timeoutMs || 45 * 60_000;
 
-    let lastErrorCombined = "AGY CLI 执行失败";
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      const result = await runProcess(command, args, {
+        cwd: context.worktreePath,
+        timeoutMs,
+        maxOutputBytes: 8_000_000,
+        env,
+      });
 
-    for (const modelName of modelsToTry) {
-      const args: string[] = [
-        "-p", prompt,
-        "--mode", this.settings?.mode || "accept-edits",
-        "--dangerously-skip-permissions",
-      ];
-      if (this.settings?.effort) {
-        args.push("--effort", this.settings.effort);
+      const rawLog = [result.stdout, result.stderr].filter(Boolean).join("\n\n--- stderr ---\n");
+      if (result.timedOut) throw new Error("AGY CLI 执行超时");
+      if (result.exitCode === 0) {
+        return {
+          summary: extractAgySummary(result.stdout),
+          rawLog,
+        };
       }
-      if (modelName) {
-        args.push("--model", modelName);
+
+      const detail = extractAgyCliErrorDetail();
+      const baseErr = lastMeaningfulLine(result.stderr || result.stdout);
+      const isTransient = detail && (detail.includes("503") || detail.includes("high demand") || detail.includes("UNAVAILABLE"));
+
+      if (isTransient && attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 8000 * (attempt + 1)));
+        continue;
       }
 
-      for (let attempt = 0; attempt <= 1; attempt++) {
-        const result = await runProcess(command, args, {
-          cwd: context.worktreePath,
-          timeoutMs,
-          maxOutputBytes: 8_000_000,
-          env,
-        });
-
-        const rawLog = [result.stdout, result.stderr].filter(Boolean).join("\n\n--- stderr ---\n");
-        if (result.timedOut) throw new Error("AGY CLI 执行超时");
-        if (result.exitCode === 0) {
-          return {
-            summary: extractAgySummary(result.stdout),
-            rawLog,
-          };
-        }
-
-        const detail = extractAgyCliErrorDetail();
-        const baseErr = lastMeaningfulLine(result.stderr || result.stdout);
-        lastErrorCombined = detail && !baseErr.includes(detail) ? `${baseErr} [原因: ${detail}]` : baseErr;
-
-        if (detail && (detail.includes("503") || detail.includes("high demand") || detail.includes("UNAVAILABLE")) && attempt === 0) {
-          await new Promise((resolve) => setTimeout(resolve, 8000));
-          continue;
-        }
-
-        if (detail && (detail.includes("429") || detail.includes("Quota exceeded") || detail.includes("RESOURCE_EXHAUSTED"))) {
-          break;
-        }
-      }
+      const combined = detail && !baseErr.includes(detail) ? `${baseErr} [原因: ${detail}]` : baseErr;
+      throw new Error(`AGY CLI 退出码 ${result.exitCode}：${combined}`);
     }
 
-    throw new Error(`AGY CLI 退出码 1：${lastErrorCombined}`);
+    throw new Error("AGY CLI 执行失败");
   }
 }
 
