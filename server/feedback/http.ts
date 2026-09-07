@@ -18,6 +18,15 @@ export function createFeedbackMiddleware(runtime: FeedbackRuntime) {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     if (!url.pathname.startsWith("/api/feedback")) return next();
 
+    if (req.method === "OPTIONS") {
+      res.statusCode = 204;
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-developer-key");
+      res.end();
+      return;
+    }
+
     try {
       if (req.method === "GET" && url.pathname === "/api/feedback") {
         const kind = parseKind(url.searchParams.get("kind"));
@@ -112,6 +121,14 @@ export function createFeedbackMiddleware(runtime: FeedbackRuntime) {
         }
         logger.info("FEEDBACK", `Feedback [${match[1]}] updated`, match[1], body);
         return sendJson(res, 200, { item });
+      }
+
+      if (req.method === "DELETE" && match) {
+        if (!authorize(req, res)) return;
+        const deleted = runtime.repository.delete(match[1]);
+        if (!deleted) return sendError(res, 404, "反馈不存在");
+        logger.info("FEEDBACK", `Feedback [${match[1]}] deleted by developer`, match[1]);
+        return sendJson(res, 200, { deleted: true, id: match[1] });
       }
 
       return sendError(res, 404, "接口不存在");
@@ -214,6 +231,9 @@ function sendError(res: ServerResponse, status: number, error: string): void {
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.statusCode = status;
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-developer-key");
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
   res.end(JSON.stringify(body));

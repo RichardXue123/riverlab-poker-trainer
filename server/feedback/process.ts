@@ -70,10 +70,23 @@ export function runProcess(
     let timedOut = false;
 
     let logStream: fs.WriteStream | undefined;
+    const startTime = Date.now();
+    let heartbeatTimer: NodeJS.Timeout | undefined;
     if (options.liveLogPath) {
       try {
         fs.mkdirSync(path.dirname(options.liveLogPath), { recursive: true });
         logStream = fs.createWriteStream(options.liveLogPath, { flags: "a", encoding: "utf8" });
+        if (child.pid) {
+          heartbeatTimer = setInterval(() => {
+            if (child.killed || child.exitCode !== null) return;
+            if (logStream && !logStream.writableEnded) {
+              const timeStr = new Date().toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+              const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+              logStream.write(`[${timeStr}] ⚡ AI 正在思考与推演修复方案... (子进程 PID: ${child.pid} 运行中，已耗时 ${elapsedSec}s)\n`);
+            }
+          }, 15_000);
+          heartbeatTimer.unref();
+        }
       } catch {
         // ignore
       }
@@ -95,10 +108,12 @@ export function runProcess(
     });
     child.on("error", (error) => {
       clearTimeout(timer);
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (logStream) logStream.end();
       reject(error);
     });
     child.on("close", (code) => {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (logStream) logStream.end();
       resolve({ exitCode: code ?? -1, stdout, stderr, timedOut });
     });

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createAiFixProvider, resolveAgyCommand } from "../server/feedback/ai-provider";
+import { createAiFixProvider, loadCicdSkillPrompt, resolveAgyCommand } from "../server/feedback/ai-provider";
 import { isAutofixEnabled, saveFeedbackConfig } from "../server/feedback/config";
 import { JsonFeedbackRepository } from "../server/feedback/repository";
 import { FeedbackFixWorker } from "../server/feedback/worker";
@@ -198,6 +198,72 @@ test("FeedbackFixWorker does not start scheduler when autofix is disabled by def
 
   process.argv = originalArgv;
   if (originalEnv !== undefined) process.env.FEEDBACK_AUTOFIX_ENABLED = originalEnv;
+});
+
+test("feedback repository allows deleting records by developer", () => {
+  withRepository((repository) => {
+    const p1 = repository.create({ kind: "player", playerName: "P1", content: "玩家反馈1" });
+    const d1 = repository.create({ kind: "developer", playerName: "D1", content: "开发者反馈1" });
+
+    assert.equal(repository.list("player").length, 1);
+    assert.equal(repository.list("developer").length, 1);
+
+    const deletedP1 = repository.delete(p1.id);
+    assert.equal(deletedP1, true);
+    assert.equal(repository.list("player").length, 0);
+
+    const deletedD1 = repository.delete(d1.id);
+    assert.equal(deletedD1, true);
+    assert.equal(repository.list("developer").length, 0);
+
+    const deletedNonExistent = repository.delete("F999999");
+    assert.equal(deletedNonExistent, false);
+  });
+});
+
+test("loadCicdSkillPrompt loads ai_cicd_skill.md from root", () => {
+  const prompt = loadCicdSkillPrompt();
+  assert.ok(prompt.includes("RiverLab 自动修复流水线 AI 开发者手册") || prompt.includes("ai_cicd_skill.md"));
+  assert.ok(prompt.includes("任务边界与执行要求"));
+});
+
+test("FIFO sequential queue claims oldest and skips items marked for manual review", () => {
+  withRepository((repository) => {
+    const f1 = repository.create({ kind: "developer", playerName: "Dev1", content: "第一个bug" });
+    const f2 = repository.create({ kind: "developer", playerName: "Dev2", content: "第二个bug" });
+    const f3 = repository.create({ kind: "developer", playerName: "Dev3", content: "第三个bug" });
+
+    // 1. First claim gets the oldest: f1
+    const claimed1 = repository.claimOldestDeveloper();
+    assert.equal(claimed1?.id, f1.id);
+
+    // 2. Mark f1 as failed and needing manual handling
+    repository.markAttemptFailed(f1.id, "编译报错", undefined, true);
+    assert.equal(repository.list("developer").find((i) => i.id === f1.id)?.statusDetail, "自动修复失败，待人工处理");
+
+    // 3. Next claim skips f1 and gets f2
+    const claimed2 = repository.claimOldestDeveloper();
+    assert.equal(claimed2?.id, f2.id);
+
+    // 4. Mark f2 as successfully fixed (awaiting review)
+    repository.markAwaitingReview(f2.id, {
+      branchName: "CICD_test_fix",
+      commitHash: "abcdef",
+      aiProvider: "agy-cli",
+      aiSummary: "已修复",
+      testSummary: "npm test 通过",
+    });
+
+    // 5. Next claim gets f3
+    const claimed3 = repository.claimOldestDeveloper();
+    assert.equal(claimed3?.id, f3.id);
+
+    // 6. Resetting f1 to pending clears manual review marker so it can be claimed again
+    repository.updateStatus(f1.id, "pending");
+    assert.equal(repository.list("developer").find((i) => i.id === f1.id)?.statusDetail, "等待自动修复");
+    const claimed1Again = repository.claimOldestDeveloper();
+    assert.equal(claimed1Again?.id, f1.id);
+  });
 });
 
 

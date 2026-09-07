@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "nextId": 2,
+  "nextId": 5,
   "items": [
     {
       "id": "F000001",
@@ -8,16 +8,54 @@
       "playerName": "RichardXue",
       "content": "其他玩家弃牌后，弃牌的牌不应该能被别人看到；变灰色是对的，但是在弃牌者之外的玩家视角中，要保持弃牌者的牌的背面朝上。",
       "createdAt": "2026-09-07T04:10:06.031Z",
-      "updatedAt": "2026-09-07T10:16:28.934Z",
-      "status": "processing",
-      "statusDetail": "AI 已生成修复，等待人工验收",
+      "updatedAt": "2026-09-07T14:06:02.146Z",
+      "status": "resolved",
+      "statusDetail": "已由开发者确认处理",
       "attempts": 1,
       "branchName": "CICD_0907_1806_bugfix",
       "commitHash": "d7b0d322ece76cb335cf01c235baf6791a2e1523",
       "aiProvider": "agy-cli",
       "aiSummary": "       isHero ||\n       state.godMode ||\n       (!seat.folded && (state.street === \"showdown\" || state.street === \"complete\"));\n     ```\n   - 牌面渲染层允许在手牌进行中为弃牌对手渲染 2 张暗牌卡背，配合 `.seat-folded` 保持背面朝上并置灰。\n4. [`aiskill.md`](file:///E:/riverlab-poker-trainer/.feedback-worktrees/f000001/aiskill.md#L94-L97)：\n   - 同步修正防作弊文档中关于弃牌手牌对他人始终保持隐藏的说明。\n---\n#### 3. 测试验证结果\n1. **更新并强化测试用例**：\n   - [`tests/showdown-visualization.test.ts`](file:///E:/riverlab-poker-trainer/.feedback-worktrees/f000001/tests/showdown-visualization.test.ts#L86-L139)：修正并扩展用例，验证在其他玩家视角下弃牌玩家牌面保持背面朝上（`showCards === false`），Hero 自身视角可见，GodMode 视角可见，并在摊牌与结算阶段均保持隐藏。\n   - [`tests/multiplayer-room.test.ts`](file:///E:/riverlab-poker-trainer/.feedback-worktrees/f000001/tests/multiplayer-room.test.ts#L87-L100)：补充了玩家弃牌后，其他玩家通过 `buildClientState` 收到的弃牌玩家 `holeCards` 必为空数组 `[]` 的防作弊断言。\n2. **执行验证**：\n   - `npm test`：全量 85 项测试全部通过（Pass 85 / Fail 0）。\n   - `npm run check`（`tsc --noEmit --skipLibCheck`）：类型检查 0 错误通过。",
       "testSummary": "npm test：通过；npm run check：通过；npm run build：通过"
+    },
+    {
+      "id": "F000002",
+      "kind": "developer",
+      "playerName": "RichardXue",
+      "content": "每个玩家自己的视角都应该在牌桌中间，需要保证玩家的相对顺序",
+      "createdAt": "2026-09-07T14:10:19.721Z",
+      "updatedAt": "2026-09-07T15:48:52.007Z",
+      "status": "processing",
+      "statusDetail": "AI 已生成修复，等待人工验收",
+      "attempts": 6,
+      "branchName": "CICD_0907_2336_bugfix",
+      "commitHash": "967a716d53c934653ca2c5cc1bbf9e54d2494d1d",
+      "aiProvider": "agy-cli",
+      "aiSummary": "   - 新增章节 `3.7 第一人称视角牌桌居中与相对顺序保持规范`，沉淀第一人称视角锚定规则与环形映射公式。\n---\n#### 3. 测试验证结果 (Test Verification Results)\n1. **新增自动化测试用例 [`tests/table-seat-perspective.test.ts`](file:///C:/Users/27487/Documents/GitHub/riverlab-poker-trainer/.feedback-worktrees/f000002/tests/table-seat-perspective.test.ts)**：\n   - 验证 `getVisualSeatIndex` 在各玩家视角下：\n     - 当 Hero 处于 0~7 任意座位时，其自身映射值必为 0（牌桌正下方中央）；\n     - 8 个座位映射结果构成完整且唯一的双射排列（0~7 互不重复）；\n     - 相邻玩家与全桌任意两玩家之间的相对顺时针距离恒定保持不变；\n     - 观战者（`heroSeatIndex = -1`）保持默认全局视角映射。\n   - 模拟真实 `MultiplayerRoom` 多客户端状态（房主 seat 0、玩家老李 seat 2、玩家小张 seat 5、观战小陈）：\n     - 验证各玩家在自身 `buildClientState` 视角下的视觉排布及相对环形距离。\n2. **验证结果**：\n   - `npm test`：全量 87 项测试用例全部通过（Pass: 87，Fail: 0）。\n   - `npm run check`（`tsc --noEmit --skipLibCheck`）：类型检查通过，0 错误。\n   - `npm run build`（`vinext build`）：生产打包构建通过。",
+      "testSummary": "npm test：通过；npm run check：通过；npm run build：通过"
+    },
+    {
+      "id": "F000003",
+      "kind": "developer",
+      "playerName": "RichardXue",
+      "content": "使用延时卡的时候，行动中不会记录在里面；但是应该要记录谁用了延时卡",
+      "createdAt": "2026-09-07T14:58:20.491Z",
+      "updatedAt": "2026-09-07T14:58:20.491Z",
+      "status": "pending",
+      "statusDetail": "等待自动修复",
+      "attempts": 0
+    },
+    {
+      "id": "F000004",
+      "kind": "developer",
+      "playerName": "影月",
+      "content": "音乐卡了.视角中心",
+      "createdAt": "2026-09-07T15:19:08.809Z",
+      "updatedAt": "2026-09-07T15:19:08.809Z",
+      "status": "pending",
+      "statusDetail": "等待自动修复",
+      "attempts": 0
     }
   ],
-  "lastSweepAt": "2026-09-07T08:56:59.792Z"
+  "lastSweepAt": "2026-09-07T14:06:59.867Z"
 }

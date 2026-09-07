@@ -24,8 +24,9 @@ export interface FeedbackRepository {
   claimOldestDeveloper(now?: Date, forceImmediate?: boolean): FeedbackRecord | undefined;
   claimDeveloperById(id: string, now?: Date): FeedbackRecord | undefined;
 
+  delete(id: string): boolean;
   markAwaitingReview(id: string, result: Pick<FeedbackRecord, "branchName" | "commitHash" | "aiProvider" | "aiSummary" | "testSummary">): FeedbackRecord | undefined;
-  markAttemptFailed(id: string, error: string, retryAt: Date): FeedbackRecord | undefined;
+  markAttemptFailed(id: string, error: string, retryAt?: Date, needsManual?: boolean): FeedbackRecord | undefined;
   getLastSweepAt(): string | undefined;
   setLastSweepAt(value: string): void;
 }
@@ -106,10 +107,23 @@ export class JsonFeedbackRepository implements FeedbackRepository {
     return structuredClone(item);
   }
 
+  delete(id: string): boolean {
+    const index = this.store.items.findIndex((entry) => entry.id === id);
+    if (index === -1) return false;
+    this.store.items.splice(index, 1);
+    this.persist();
+    return true;
+  }
+
   claimOldestDeveloper(now = new Date(), forceImmediate = false): FeedbackRecord | undefined {
     const nowIso = now.toISOString();
     const item = this.store.items
-      .filter((entry) => entry.kind === "developer" && entry.status === "pending" && (forceImmediate || (entry.attempts < 3 && (!entry.nextAttemptAt || entry.nextAttemptAt <= nowIso))))
+      .filter((entry) => {
+        if (entry.kind !== "developer" || entry.status !== "pending") return false;
+        if (entry.statusDetail?.includes("待人工处理") || entry.statusDetail?.includes("已暂停")) return false;
+        if (forceImmediate) return true;
+        return entry.attempts < 3 && (!entry.nextAttemptAt || entry.nextAttemptAt <= nowIso);
+      })
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
     if (!item) return undefined;
     item.status = "processing";
@@ -136,7 +150,6 @@ export class JsonFeedbackRepository implements FeedbackRepository {
     return structuredClone(item);
   }
 
-
   markAwaitingReview(id: string, result: Pick<FeedbackRecord, "branchName" | "commitHash" | "aiProvider" | "aiSummary" | "testSummary">): FeedbackRecord | undefined {
     const item = this.store.items.find((entry) => entry.id === id);
     if (!item) return undefined;
@@ -151,19 +164,22 @@ export class JsonFeedbackRepository implements FeedbackRepository {
     return structuredClone(item);
   }
 
-  markAttemptFailed(id: string, error: string, retryAt: Date): FeedbackRecord | undefined {
+  markAttemptFailed(id: string, error: string, retryAt?: Date, needsManual = false): FeedbackRecord | undefined {
     const item = this.store.items.find((entry) => entry.id === id);
     if (!item) return undefined;
     if (item.status !== "processing" || item.statusDetail !== "AI 正在分析与修复") return structuredClone(item);
     item.status = "pending";
     item.lastError = error.slice(0, 2000);
     item.updatedAt = new Date().toISOString();
-    if (item.attempts >= 3) {
+    if (needsManual) {
+      item.statusDetail = "自动修复失败，待人工处理";
+      delete item.nextAttemptAt;
+    } else if (item.attempts >= 3) {
       item.statusDetail = "自动修复已暂停，需要人工处理或重新打开";
       delete item.nextAttemptAt;
     } else {
       item.statusDetail = `自动修复失败，等待第 ${item.attempts + 1} 次尝试`;
-      item.nextAttemptAt = retryAt.toISOString();
+      item.nextAttemptAt = (retryAt || new Date(Date.now() + 5 * 60 * 60 * 1000)).toISOString();
     }
     this.persist();
     return structuredClone(item);
