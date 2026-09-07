@@ -109,7 +109,7 @@ export class JsonFeedbackRepository implements FeedbackRepository {
   claimOldestDeveloper(now = new Date(), forceImmediate = false): FeedbackRecord | undefined {
     const nowIso = now.toISOString();
     const item = this.store.items
-      .filter((entry) => entry.kind === "developer" && entry.status === "pending" && entry.attempts < 3 && (forceImmediate || !entry.nextAttemptAt || entry.nextAttemptAt <= nowIso))
+      .filter((entry) => entry.kind === "developer" && entry.status === "pending" && (forceImmediate || (entry.attempts < 3 && (!entry.nextAttemptAt || entry.nextAttemptAt <= nowIso))))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
     if (!item) return undefined;
     item.status = "processing";
