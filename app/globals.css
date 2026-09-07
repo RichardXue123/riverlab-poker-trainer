@@ -4244,6 +4244,8 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .feedback-admin-actions { display: flex; gap: 7px; margin-top: 12px; }
 .feedback-admin-actions button { padding: 5px 8px; color: #94a3b8; border-color: rgba(148, 163, 184, 0.16); background: rgba(30, 41, 59, 0.6); font-size: 10px; }
 .feedback-admin-actions button.resolve { color: #6ee7b7; border-color: rgba(52, 211, 153, 0.22); }
+.feedback-admin-actions button.danger { color: #f87171; border-color: rgba(248, 113, 113, 0.25); }
+.feedback-admin-actions button.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.15); border-color: rgba(248, 113, 113, 0.45); }
 .feedback-empty, .feedback-message { padding: 22px; border: 1px dashed rgba(148, 163, 184, 0.16); border-radius: 10px; color: #64748b; text-align: center; font-size: 12px; }
 .feedback-message { padding: 9px; color: #a7f3d0; border-style: solid; background: rgba(16, 185, 129, 0.07); }
 

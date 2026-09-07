@@ -143,6 +143,25 @@ export default function FeedbackCenter() {
     }
   };
 
+  const deleteFeedback = async (id: string) => {
+    if (!developerKey) return;
+    const confirmed = window.confirm(`确定要彻底删除反馈 [${id}] 吗？此操作不可恢复。`);
+    if (!confirmed) return;
+    setBusy(true);
+    try {
+      await requestJson(`/api/feedback/${id}`, {
+        method: "DELETE",
+        headers: { "x-developer-key": developerKey },
+      });
+      setMessage(`反馈 [${id}] 已成功删除`);
+      await load(kind);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "删除反馈失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const runNow = async () => {
     if (!developerKey) return;
     setBusy(true);
@@ -256,6 +275,15 @@ export default function FeedbackCenter() {
                             {item.status === "pending" && <button type="button" onClick={() => void updateStatus(item.id, "processing")}>开始人工处理</button>}
                             {item.status !== "resolved" && <button type="button" className="resolve" onClick={() => void updateStatus(item.id, "resolved")}>标记已处理</button>}
                             {item.status === "resolved" && <button type="button" onClick={() => void updateStatus(item.id, "pending")}>重新打开</button>}
+                            <button
+                              type="button"
+                              className="danger"
+                              onClick={() => void deleteFeedback(item.id)}
+                              disabled={busy}
+                              title="彻底删除此条反馈"
+                            >
+                              删除反馈
+                            </button>
                           </div>
                         )}
                       </article>
