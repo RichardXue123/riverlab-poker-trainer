@@ -10,7 +10,7 @@ export class FeedbackRuntime {
   constructor(readonly root: string) {
     const dataDir = path.resolve(process.env.FEEDBACK_DATA_DIR || path.join(root, "data"));
     this.repository = new JsonFeedbackRepository(path.join(dataDir, "feedback.json"));
-    this.worker = new FeedbackFixWorker(root, dataDir, this.repository, createAiFixProvider());
+    this.worker = new FeedbackFixWorker(root, dataDir, this.repository);
   }
 }
 
@@ -18,7 +18,9 @@ const runtimeKey = Symbol.for("riverlab.feedback.runtime");
 
 export function getFeedbackRuntime(root: string): FeedbackRuntime {
   const globals = globalThis as typeof globalThis & { [runtimeKey]?: FeedbackRuntime };
-  if (!globals[runtimeKey]) globals[runtimeKey] = new FeedbackRuntime(root);
+  if (!globals[runtimeKey] || typeof globals[runtimeKey].worker?.getProvider !== "function") {
+    globals[runtimeKey] = new FeedbackRuntime(root);
+  }
   return globals[runtimeKey];
 }
 

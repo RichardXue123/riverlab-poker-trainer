@@ -26,7 +26,7 @@ export default defineConfig({
       clientPort: 4311,
     },
     watch: {
-      ignored: ["**/resource/**", "**/public/music/**", "**/.git/**", "**/node_modules/**"],
+      ignored: ["**/resource/**", "**/public/music/**", "**/.git/**", "**/.feedback-worktrees/**", "**/node_modules/**"],
     },
   },
 });

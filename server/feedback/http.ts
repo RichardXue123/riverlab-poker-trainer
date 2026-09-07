@@ -1,6 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { FeedbackKind, FeedbackStatus } from "../../lib/feedback/types";
+import { createAiFixProvider } from "./ai-provider";
+import { type FixProviderKind, loadFeedbackConfig, saveFeedbackConfig } from "./config";
 import type { FeedbackRuntime } from "./runtime";
 
 type Next = (error?: unknown) => void;
@@ -25,12 +27,13 @@ export function createFeedbackMiddleware(runtime: FeedbackRuntime) {
       if (req.method === "POST" && url.pathname === "/api/feedback") {
         const ip = clientIp(req);
         if (!consumeRate(submissionRates, ip, 6, 60_000)) return sendError(res, 429, "提交过于频繁，请稍后再试");
-        const body = await readJson(req) as { kind?: unknown; playerName?: unknown; content?: unknown; developerKey?: unknown };
+        const body = await readJson(req) as { kind?: unknown; playerName?: unknown; content?: unknown; developerKey?: unknown; targetProvider?: unknown };
         const kind = parseKind(body.kind);
         if (kind === "developer" && !authorize(req, res, body.developerKey)) return;
         const playerName = cleanText(body.playerName, 24, "玩家名字");
         const content = cleanText(body.content, 4000, "反馈内容", 2);
-        return sendJson(res, 201, { item: runtime.repository.create({ kind, playerName, content }) });
+        const targetProvider = parseTargetProvider(body.targetProvider);
+        return sendJson(res, 201, { item: runtime.repository.create({ kind, playerName, content, targetProvider }) });
       }
 
       if (req.method === "GET" && url.pathname === "/api/feedback/runtime") {
@@ -41,17 +44,66 @@ export function createFeedbackMiddleware(runtime: FeedbackRuntime) {
       if (req.method === "POST" && url.pathname === "/api/feedback/run") {
         if (!authorize(req, res)) return;
         if (runtime.worker.info().running) return sendError(res, 409, "已有自动修复任务正在运行");
-        void runtime.worker.runNow();
-        return sendJson(res, 202, { accepted: true });
+        const body = await readJson(req).catch(() => ({})) as { id?: unknown; targetProvider?: unknown };
+        const feedbackId = typeof body?.id === "string" && /^F\d{6}$/.test(body.id) ? body.id : undefined;
+        const targetProvider = parseTargetProvider(body?.targetProvider);
+        void runtime.worker.runNow(feedbackId, targetProvider);
+        return sendJson(res, 202, { accepted: true, targetId: feedbackId, provider: targetProvider });
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/feedback/config") {
+        if (!authorize(req, res)) return;
+        const config = loadFeedbackConfig(runtime.root);
+        const activeProvider = typeof runtime.worker?.getProvider === "function"
+          ? runtime.worker.getProvider().name
+          : createAiFixProvider(runtime.root).name;
+        return sendJson(res, 200, {
+          config,
+          activeProvider,
+          availableProviders: ["agy", "codex"],
+        });
+      }
+
+      if (req.method === "PATCH" && url.pathname === "/api/feedback/config") {
+        if (!authorize(req, res)) return;
+        const body = await readJson(req) as { provider?: unknown };
+        const raw = String(body?.provider || "").trim().toLowerCase();
+        if (!["agy", "codex", "agi", "agy-cli", "codex-cli"].includes(raw)) {
+          return sendError(res, 400, "提供器必须是 'agy' (或 'agi') 或 'codex'");
+        }
+        const targetProvider = (raw === "codex" || raw === "codex-cli") ? "codex" : "agy";
+        const updated = saveFeedbackConfig(runtime.root, { provider: targetProvider });
+        if (typeof runtime.worker?.setProvider === "function") {
+          runtime.worker.setProvider(targetProvider);
+        }
+        const activeProvider = typeof runtime.worker?.getProvider === "function"
+          ? runtime.worker.getProvider().name
+          : createAiFixProvider(runtime.root).name;
+        return sendJson(res, 200, {
+          config: updated,
+          activeProvider,
+          availableProviders: ["agy", "codex"],
+        });
       }
 
       const match = url.pathname.match(/^\/api\/feedback\/(F\d{6})$/);
       if (req.method === "PATCH" && match) {
         if (!authorize(req, res)) return;
-        const body = await readJson(req) as { status?: unknown };
-        const status = parseStatus(body.status);
-        const item = runtime.repository.updateStatus(match[1], status);
+        const body = await readJson(req) as { status?: unknown; targetProvider?: unknown };
+        let item = runtime.repository.list("developer").find((i) => i.id === match[1])
+          || runtime.repository.list("player").find((i) => i.id === match[1]);
         if (!item) return sendError(res, 404, "反馈不存在");
+
+        if (body.targetProvider !== undefined) {
+          const provider = parseTargetProvider(body.targetProvider);
+          if (provider) {
+            item = runtime.repository.updateTargetProvider(match[1], provider) || item;
+          }
+        }
+        if (body.status !== undefined) {
+          const status = parseStatus(body.status);
+          item = runtime.repository.updateStatus(match[1], status) || item;
+        }
         return sendJson(res, 200, { item });
       }
 
@@ -96,6 +148,14 @@ function parseKind(value: unknown): FeedbackKind {
 function parseStatus(value: unknown): FeedbackStatus {
   if (value === "pending" || value === "processing" || value === "resolved") return value;
   throw new Error("反馈状态无效");
+}
+
+function parseTargetProvider(value: unknown): "agy" | "codex" | undefined {
+  if (typeof value !== "string") return undefined;
+  const lower = value.trim().toLowerCase();
+  if (lower === "agy" || lower === "agy-cli") return "agy";
+  if (lower === "codex" || lower === "codex-cli") return "codex";
+  return undefined;
 }
 
 function cleanText(value: unknown, maxLength: number, label: string, minLength = 1): string {

@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { FeedbackRuntimeInfo } from "../../lib/feedback/types";
-import type { AiFixProvider } from "./ai-provider";
+import type { FixProviderKind } from "./config";
+import { type AiFixProvider, createAiFixProvider } from "./ai-provider";
 import type { FeedbackRepository } from "./repository";
 import { runProcess } from "./process";
 
@@ -13,13 +14,26 @@ export class FeedbackFixWorker {
   private running = false;
   private started = false;
   private nextSweepAt?: string;
+  private providerOverride?: FixProviderKind;
 
   constructor(
     private readonly root: string,
     private readonly dataDir: string,
     private readonly repository: FeedbackRepository,
-    private readonly provider: AiFixProvider,
+    private readonly explicitProvider?: AiFixProvider,
   ) {}
+
+  getProvider(explicitName?: string): AiFixProvider {
+    if (this.explicitProvider && !explicitName) return this.explicitProvider;
+    return createAiFixProvider(this.root, explicitName || this.providerOverride);
+  }
+
+  setProvider(providerName: FixProviderKind): void {
+    this.providerOverride = providerName;
+    if (process.env.AI_FIX_PROVIDER) {
+      process.env.AI_FIX_PROVIDER = providerName;
+    }
+  }
 
   start(): void {
     if (this.started || process.env.FEEDBACK_AUTOFIX_ENABLED === "false") return;
@@ -43,16 +57,16 @@ export class FeedbackFixWorker {
 
   info(): FeedbackRuntimeInfo {
     return {
-      provider: this.provider.name,
+      provider: this.getProvider().name,
       running: this.running,
       lastSweepAt: this.repository.getLastSweepAt(),
       nextSweepAt: this.nextSweepAt,
     };
   }
 
-  async runNow(): Promise<boolean> {
+  async runNow(feedbackId?: string, targetProvider?: "agy" | "codex"): Promise<boolean> {
     if (this.running) return false;
-    await this.sweep(false);
+    await this.sweep(false, feedbackId, targetProvider);
     return true;
   }
 
@@ -64,7 +78,7 @@ export class FeedbackFixWorker {
     this.timer.unref();
   }
 
-  private async sweep(scheduled: boolean): Promise<void> {
+  private async sweep(scheduled: boolean, targetId?: string, targetProvider?: "agy" | "codex"): Promise<void> {
     if (this.running) {
       if (scheduled) this.schedule(60_000);
       return;
@@ -72,15 +86,20 @@ export class FeedbackFixWorker {
     this.running = true;
     if (scheduled) this.repository.setLastSweepAt(new Date().toISOString());
     try {
-      const feedback = this.repository.claimOldestDeveloper();
-      if (feedback) await this.processFeedback(feedback.id);
+      if (targetId && targetProvider) {
+        this.repository.updateTargetProvider(targetId, targetProvider);
+      }
+      const feedback = targetId
+        ? this.repository.claimDeveloperById(targetId)
+        : this.repository.claimOldestDeveloper();
+      if (feedback) await this.processFeedback(feedback.id, targetProvider);
     } finally {
       this.running = false;
       if (scheduled) this.schedule(FIVE_HOURS_MS);
     }
   }
 
-  private async processFeedback(id: string): Promise<void> {
+  private async processFeedback(id: string, preferredProvider?: "agy" | "codex"): Promise<void> {
     const feedback = this.repository.list("developer").find((item) => item.id === id);
     if (!feedback) return;
     const worktreesDir = path.join(this.root, ".feedback-worktrees");
@@ -95,7 +114,8 @@ export class FeedbackFixWorker {
       await this.mustRun("git", ["worktree", "add", "-b", branchName, worktreePath, "HEAD"], this.root, 2 * 60_000);
       worktreeCreated = true;
 
-      const aiResult = await this.provider.run({ feedback, worktreePath });
+      const activeProvider = this.getProvider(preferredProvider);
+      const aiResult = await activeProvider.run({ feedback, worktreePath });
       fs.writeFileSync(path.join(logsDir, `attempt-${feedback.attempts}-ai.log`), aiResult.rawLog, "utf8");
 
       const changed = await this.mustRun("git", ["status", "--short"], worktreePath, 30_000);
@@ -119,7 +139,7 @@ export class FeedbackFixWorker {
       this.repository.markAwaitingReview(feedback.id, {
         branchName,
         commitHash: commit.stdout.trim(),
-        aiProvider: this.provider.name,
+        aiProvider: activeProvider.name,
         aiSummary: aiResult.summary,
         testSummary: checkSummaries.join("；"),
       });

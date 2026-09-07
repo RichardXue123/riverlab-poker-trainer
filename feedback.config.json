@@ -1,0 +1,13 @@
+{
+  "provider": "agy",
+  "timeoutMs": 2700000,
+  "agy": {
+    "command": "agy",
+    "mode": "accept-edits",
+    "effort": "high",
+    "dangerouslySkipPermissions": true
+  },
+  "codex": {
+    "command": "codex"
+  }
+}

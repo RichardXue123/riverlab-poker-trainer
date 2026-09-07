@@ -3,7 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createAiFixProvider, resolveAgyCommand } from "../server/feedback/ai-provider";
+import { saveFeedbackConfig } from "../server/feedback/config";
 import { JsonFeedbackRepository } from "../server/feedback/repository";
+import { FeedbackFixWorker } from "../server/feedback/worker";
 
 function withRepository(run: (repository: JsonFeedbackRepository, filePath: string) => void): void {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "riverlab-feedback-test-"));
@@ -73,4 +76,75 @@ test("failed automatic fixes stop after three attempts until manually reopened",
     assert.equal(repository.claimOldestDeveloper()?.attempts, 1);
   });
 });
+
+test("ai fix provider resolves agy by default and allows switching via feedback.config.json", () => {
+  const originalEnv = process.env.AI_FIX_PROVIDER;
+  delete process.env.AI_FIX_PROVIDER;
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "riverlab-config-test-"));
+  try {
+    // 1. Without config file, defaults to agy
+    const defaultProvider = createAiFixProvider(tempDir);
+    assert.equal(defaultProvider.name, "agy-cli");
+
+    // 2. Save config with codex provider
+    saveFeedbackConfig(tempDir, { provider: "codex" });
+    const codexProvider = createAiFixProvider(tempDir);
+    assert.equal(codexProvider.name, "codex-cli");
+
+    // 3. Switch back to agy via config
+    saveFeedbackConfig(tempDir, { provider: "agy" });
+    const agyProvider = createAiFixProvider(tempDir);
+    assert.equal(agyProvider.name, "agy-cli");
+
+    // 4. Worker dynamically reflects current config
+    const repo = new JsonFeedbackRepository(path.join(tempDir, "feedback.json"));
+    const worker = new FeedbackFixWorker(tempDir, tempDir, repo);
+    assert.equal(worker.info().provider, "agy-cli");
+
+    saveFeedbackConfig(tempDir, { provider: "codex" });
+    assert.equal(worker.info().provider, "codex-cli");
+
+    // 5. Environment variable can override config
+    process.env.AI_FIX_PROVIDER = "agy";
+    assert.equal(worker.info().provider, "agy-cli");
+
+    // 6. worker.setProvider updates provider immediately
+    worker.setProvider("codex");
+    assert.equal(worker.info().provider, "codex-cli");
+    worker.setProvider("agy");
+    assert.equal(worker.info().provider, "agy-cli");
+  } finally {
+    if (originalEnv !== undefined) {
+      process.env.AI_FIX_PROVIDER = originalEnv;
+    } else {
+      delete process.env.AI_FIX_PROVIDER;
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("resolveAgyCommand finds binary or falls back to agy", () => {
+  const custom = resolveAgyCommand("my-custom-agy");
+  assert.equal(custom, "my-custom-agy");
+  const fallback = resolveAgyCommand();
+  assert.ok(typeof fallback === "string" && fallback.length > 0);
+});
+
+test("each developer feedback can have its own designated engine and be claimed by id", () => {
+  withRepository((repository) => {
+    const fb1 = repository.create({ kind: "developer", playerName: "Dev", content: "用 AGY 修复", targetProvider: "agy" });
+    const fb2 = repository.create({ kind: "developer", playerName: "Dev", content: "用 Codex 修复", targetProvider: "codex" });
+
+    assert.equal(fb1.targetProvider, "agy");
+    assert.equal(fb2.targetProvider, "codex");
+
+    repository.updateTargetProvider(fb1.id, "codex");
+    assert.equal(repository.list("developer").find((i) => i.id === fb1.id)?.targetProvider, "codex");
+
+    const claimedFb2 = repository.claimDeveloperById(fb2.id);
+    assert.equal(claimedFb2?.id, fb2.id);
+    assert.equal(claimedFb2?.targetProvider, "codex");
+  });
+});
+
 

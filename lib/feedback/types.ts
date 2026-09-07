@@ -19,6 +19,7 @@ export interface FeedbackRecord {
   aiSummary?: string;
   testSummary?: string;
   lastError?: string;
+  targetProvider?: "agy" | "codex";
 }
 
 export interface FeedbackListResponse {
@@ -30,5 +31,24 @@ export interface FeedbackRuntimeInfo {
   running: boolean;
   lastSweepAt?: string;
   nextSweepAt?: string;
+}
+
+export interface FeedbackConfigResponse {
+  config: {
+    provider: string;
+    timeoutMs?: number;
+    agy?: {
+      command?: string;
+      model?: string;
+      effort?: string;
+      mode?: string;
+      dangerouslySkipPermissions?: boolean;
+    };
+    codex?: {
+      command?: string;
+    };
+  };
+  activeProvider: string;
+  availableProviders: string[];
 }
 
