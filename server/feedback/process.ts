@@ -40,7 +40,7 @@ export function resolveGitCommand(): string {
 export function runProcess(
   command: string,
   args: string[],
-  options: { cwd: string; stdin?: string; timeoutMs?: number; maxOutputBytes?: number; env?: NodeJS.ProcessEnv },
+  options: { cwd: string; stdin?: string; timeoutMs?: number; maxOutputBytes?: number; env?: NodeJS.ProcessEnv; liveLogPath?: string },
 ): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
     let executable = command;
@@ -69,19 +69,39 @@ export function runProcess(
     let stderr = "";
     let timedOut = false;
 
+    let logStream: fs.WriteStream | undefined;
+    if (options.liveLogPath) {
+      try {
+        fs.mkdirSync(path.dirname(options.liveLogPath), { recursive: true });
+        logStream = fs.createWriteStream(options.liveLogPath, { flags: "a", encoding: "utf8" });
+      } catch {
+        // ignore
+      }
+    }
+
     const append = (current: string, chunk: Buffer): string => {
       if (Buffer.byteLength(current) >= maxOutputBytes) return current;
       const next = current + chunk.toString("utf8");
       return Buffer.byteLength(next) > maxOutputBytes ? next.slice(0, maxOutputBytes) : next;
     };
 
-    child.stdout.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout = append(stdout, chunk);
+      if (logStream) logStream.write(chunk);
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr = append(stderr, chunk);
+      if (logStream) logStream.write(chunk);
+    });
     child.on("error", (error) => {
       clearTimeout(timer);
+      if (logStream) logStream.end();
       reject(error);
     });
-    child.on("close", (code) => resolve({ exitCode: code ?? -1, stdout, stderr, timedOut }));
+    child.on("close", (code) => {
+      if (logStream) logStream.end();
+      resolve({ exitCode: code ?? -1, stdout, stderr, timedOut });
+    });
 
     const timer = setTimeout(() => {
       timedOut = true;

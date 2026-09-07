@@ -129,12 +129,22 @@ export class FeedbackFixWorker {
 
       const activeProvider = this.getProvider(preferredProvider);
       logger.info("CICD", `Invoking AI fix provider [${activeProvider.name}] for [${id}]`, id);
-      const aiResult = await activeProvider.run({ feedback, worktreePath });
+      const liveLogPath = path.join(this.root, "logs", "feedback-live.log");
+      const appendLiveLog = (text: string) => {
+        try {
+          fs.appendFileSync(liveLogPath, text, "utf8");
+        } catch {
+          // ignore
+        }
+      };
+
+      const aiResult = await activeProvider.run({ feedback, worktreePath, liveLogPath });
       fs.writeFileSync(path.join(logsDir, `attempt-${feedback.attempts}-ai.log`), aiResult.rawLog, "utf8");
 
       const changed = await this.mustRun("git", ["status", "--short"], worktreePath, 30_000);
       if (!changed.stdout.trim()) throw new Error("AI 未产生代码修改；可能无法复现或反馈信息不足");
 
+      appendLiveLog("\n\n" + "=".repeat(80) + "\n【AI 修复执行完成，开始自动化流水线测试】\n" + "-".repeat(80) + "\n");
       const checks = [
         ["npm", ["test"]],
         ["npm", ["run", "check"]],
@@ -143,8 +153,10 @@ export class FeedbackFixWorker {
       const checkSummaries: string[] = [];
       for (const [command, args] of checks) {
         logger.info("CICD", `Running validation check: ${command} ${args.join(" ")}`, id);
+        appendLiveLog(`⏳ 正在执行验证: ${command} ${args.join(" ")} ...\n`);
         const result = await this.mustRun(command, [...args], worktreePath, 20 * 60_000);
         checkSummaries.push(`${command} ${args.join(" ")}：通过`);
+        appendLiveLog(`✅ 验证通过: ${command} ${args.join(" ")}\n`);
         fs.writeFileSync(path.join(logsDir, `attempt-${feedback.attempts}-${args.at(-1)}.log`), `${result.stdout}\n${result.stderr}`, "utf8");
       }
 
@@ -157,6 +169,17 @@ export class FeedbackFixWorker {
         provider: activeProvider.name,
       });
 
+      appendLiveLog([
+        "",
+        "=".repeat(80),
+        "🎉【自动修复成功完成】",
+        `- 分支名称: ${branchName}`,
+        `- 提交哈希: ${commitHash}`,
+        `- AI 总结: ${aiResult.summary}`,
+        "=".repeat(80),
+        "",
+      ].join("\n"));
+
       this.repository.markAwaitingReview(feedback.id, {
         branchName,
         commitHash,
@@ -167,6 +190,12 @@ export class FeedbackFixWorker {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.error("CICD", `Feedback [${id}] auto-fix failed: ${message}`, id);
+      const liveLogPath = path.join(this.root, "logs", "feedback-live.log");
+      try {
+        fs.appendFileSync(liveLogPath, `\n\n❌【修复未完成/失败】: ${message}\n`, "utf8");
+      } catch {
+        // ignore
+      }
       if (worktreeCreated) {
         const diff = await runProcess("git", ["diff", "--binary", "HEAD"], { cwd: worktreePath, timeoutMs: 30_000, maxOutputBytes: 5_000_000 }).catch(() => undefined);
         if (diff?.stdout) fs.writeFileSync(path.join(logsDir, `attempt-${feedback.attempts}-failure.patch`), diff.stdout, "utf8");

@@ -8,10 +8,15 @@
       "playerName": "RichardXue",
       "content": "其他玩家弃牌后，弃牌的牌不应该能被别人看到；变灰色是对的，但是在弃牌者之外的玩家视角中，要保持弃牌者的牌的背面朝上。",
       "createdAt": "2026-09-07T04:10:06.031Z",
-      "updatedAt": "2026-09-07T09:56:00.000Z",
-      "status": "pending",
-      "statusDetail": "等待自动修复",
-      "attempts": 0
+      "updatedAt": "2026-09-07T10:16:28.934Z",
+      "status": "processing",
+      "statusDetail": "AI 已生成修复，等待人工验收",
+      "attempts": 1,
+      "branchName": "CICD_0907_1806_bugfix",
+      "commitHash": "d7b0d322ece76cb335cf01c235baf6791a2e1523",
+      "aiProvider": "agy-cli",
+      "aiSummary": "       isHero ||\n       state.godMode ||\n       (!seat.folded && (state.street === \"showdown\" || state.street === \"complete\"));\n     ```\n   - 牌面渲染层允许在手牌进行中为弃牌对手渲染 2 张暗牌卡背，配合 `.seat-folded` 保持背面朝上并置灰。\n4. [`aiskill.md`](file:///E:/riverlab-poker-trainer/.feedback-worktrees/f000001/aiskill.md#L94-L97)：\n   - 同步修正防作弊文档中关于弃牌手牌对他人始终保持隐藏的说明。\n---\n#### 3. 测试验证结果\n1. **更新并强化测试用例**：\n   - [`tests/showdown-visualization.test.ts`](file:///E:/riverlab-poker-trainer/.feedback-worktrees/f000001/tests/showdown-visualization.test.ts#L86-L139)：修正并扩展用例，验证在其他玩家视角下弃牌玩家牌面保持背面朝上（`showCards === false`），Hero 自身视角可见，GodMode 视角可见，并在摊牌与结算阶段均保持隐藏。\n   - [`tests/multiplayer-room.test.ts`](file:///E:/riverlab-poker-trainer/.feedback-worktrees/f000001/tests/multiplayer-room.test.ts#L87-L100)：补充了玩家弃牌后，其他玩家通过 `buildClientState` 收到的弃牌玩家 `holeCards` 必为空数组 `[]` 的防作弊断言。\n2. **执行验证**：\n   - `npm test`：全量 85 项测试全部通过（Pass 85 / Fail 0）。\n   - `npm run check`（`tsc --noEmit --skipLibCheck`）：类型检查 0 错误通过。",
+      "testSummary": "npm test：通过；npm run check：通过；npm run build：通过"
     }
   ],
   "lastSweepAt": "2026-09-07T08:56:59.792Z"

@@ -11,6 +11,7 @@ import {
 export interface AiFixContext {
   feedback: FeedbackRecord;
   worktreePath: string;
+  liveLogPath?: string;
 }
 
 export interface AiFixResult {
@@ -51,6 +52,32 @@ export class AgyCliProvider implements AiFixProvider {
     const command = resolveAgyCommand(this.settings?.command);
     const prompt = buildAgyFixPrompt(context.feedback);
 
+    if (context.liveLogPath) {
+      try {
+        fs.mkdirSync(path.dirname(context.liveLogPath), { recursive: true });
+        const banner = [
+          "=".repeat(80),
+          "【RiverLab AI 自动修复实时日志】",
+          `反馈编号: ${context.feedback.id}`,
+          `提交玩家: ${context.feedback.playerName}`,
+          `启动时间: ${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`,
+          "=".repeat(80),
+          "",
+          "【发送给 AI 的完整 Prompt】:",
+          "-".repeat(80),
+          prompt.trim(),
+          "-".repeat(80),
+          "",
+          "【AI 实时响应与执行进度】:",
+          "-".repeat(80),
+          "",
+        ].join("\n");
+        fs.writeFileSync(context.liveLogPath, banner, "utf8");
+      } catch {
+        // ignore
+      }
+    }
+
     const args: string[] = [
       "-p", prompt,
       "--mode", this.settings?.mode || "accept-edits",
@@ -63,9 +90,12 @@ export class AgyCliProvider implements AiFixProvider {
       args.push("--model", this.settings.model);
     }
 
+    const timeoutMs = Number(process.env.AI_FIX_TIMEOUT_MS) || this.settings?.timeoutMs || 45 * 60_000;
+    const timeoutMinutes = Math.max(5, Math.round(timeoutMs / 60_000));
+    args.push("--print-timeout", `${timeoutMinutes}m`);
+
     const apiKey = this.settings?.apiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
     const env: NodeJS.ProcessEnv = apiKey ? { ...process.env, GEMINI_API_KEY: apiKey } : process.env;
-    const timeoutMs = Number(process.env.AI_FIX_TIMEOUT_MS) || this.settings?.timeoutMs || 45 * 60_000;
 
     for (let attempt = 0; attempt <= 2; attempt++) {
       const result = await runProcess(command, args, {
@@ -73,6 +103,7 @@ export class AgyCliProvider implements AiFixProvider {
         timeoutMs,
         maxOutputBytes: 8_000_000,
         env,
+        liveLogPath: context.liveLogPath,
       });
 
       const rawLog = [result.stdout, result.stderr].filter(Boolean).join("\n\n--- stderr ---\n");
