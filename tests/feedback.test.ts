@@ -266,4 +266,100 @@ test("FIFO sequential queue claims oldest and skips items marked for manual revi
   });
 });
 
+test("hasClaimableDeveloper accurately detects pending feedback requiring fix", () => {
+  withRepository((repository) => {
+    // 1. Empty repository
+    assert.equal(repository.hasClaimableDeveloper(), false);
+    assert.equal(repository.hasClaimableDeveloper("F000001"), false);
+
+    // 2. Only player feedback
+    const p1 = repository.create({ kind: "player", playerName: "P1", content: "玩家建议" });
+    assert.equal(repository.hasClaimableDeveloper(), false);
+    assert.equal(repository.hasClaimableDeveloper(p1.id), false);
+
+    // 3. Add pending developer feedback
+    const d1 = repository.create({ kind: "developer", playerName: "Dev1", content: "开发建议1" });
+    assert.equal(repository.hasClaimableDeveloper(), true);
+    assert.equal(repository.hasClaimableDeveloper(d1.id), true);
+
+    // 4. Claim d1 and mark as requiring manual review (should not be auto-claimable)
+    repository.claimOldestDeveloper();
+    repository.markAttemptFailed(d1.id, "编译报错", undefined, true);
+    assert.equal(repository.hasClaimableDeveloper(), false);
+    assert.equal(repository.hasClaimableDeveloper(d1.id), false);
+
+    // 5. Add second developer feedback
+    const d2 = repository.create({ kind: "developer", playerName: "Dev2", content: "开发建议2" });
+    assert.equal(repository.hasClaimableDeveloper(), true);
+    assert.equal(repository.hasClaimableDeveloper(d2.id), true);
+    assert.equal(repository.hasClaimableDeveloper(d1.id), false);
+
+    // 6. Resolve d2
+    repository.updateStatus(d2.id, "resolved");
+    assert.equal(repository.hasClaimableDeveloper(), false);
+    assert.equal(repository.hasClaimableDeveloper(d2.id), false);
+  });
+});
+
+test("worker runNow performs pre-check and rejects when no feedback requires fix", async () => {
+  await withRepository(async (repository, filePath) => {
+    const worker = new FeedbackFixWorker(path.dirname(filePath), path.dirname(filePath), repository);
+    // 1. No developer feedback -> should return started: false
+    const res1 = await worker.runNow();
+    assert.equal(res1.started, false);
+    assert.ok(res1.message?.includes("没有需要自动修复的反馈"));
+
+    // 2. Add player feedback only -> still started: false
+    const p1 = repository.create({ kind: "player", playerName: "P1", content: "玩家建议" });
+    const res2 = await worker.runNow(p1.id);
+    assert.equal(res2.started, false);
+    assert.ok(res2.message?.includes("无需自动修复"));
+
+    // 3. Target non-existent ID -> started: false
+    const res3 = await worker.runNow("F999999");
+    assert.equal(res3.started, false);
+    assert.ok(res3.message?.includes("无需自动修复"));
+  });
+});
+
+test("batch execution links multiple resolved feedbacks to single unified branch", () => {
+  withRepository((repository) => {
+    const f1 = repository.create({ kind: "developer", playerName: "Dev1", content: "Bug 1: 转移房主后同步更新权限" });
+    const f2 = repository.create({ kind: "developer", playerName: "Dev2", content: "Bug 2: 筹码耗尽三选一弹窗" });
+
+    const sharedBranch = "CICD_0908_1200_bugfix";
+
+    // 1. Claim f1 and resolve on sharedBranch
+    repository.claimOldestDeveloper();
+    repository.markAwaitingReview(f1.id, {
+      branchName: sharedBranch,
+      commitHash: "1111111",
+      aiProvider: "agy-cli",
+      aiSummary: "房主权限已同步切换",
+      testSummary: "通过",
+    });
+
+    // 2. Claim f2 and resolve on the same sharedBranch
+    repository.claimOldestDeveloper();
+    repository.markAwaitingReview(f2.id, {
+      branchName: sharedBranch,
+      commitHash: "2222222",
+      aiProvider: "agy-cli",
+      aiSummary: "筹码耗尽交互弹窗已实现",
+      testSummary: "通过",
+    });
+
+    const devList = repository.list("developer");
+    const item1 = devList.find((i) => i.id === f1.id);
+    const item2 = devList.find((i) => i.id === f2.id);
+
+    assert.equal(item1?.branchName, sharedBranch);
+    assert.equal(item1?.commitHash, "1111111");
+    assert.equal(item2?.branchName, sharedBranch);
+    assert.equal(item2?.commitHash, "2222222");
+    assert.equal(item1?.statusDetail, "AI 已生成修复，等待人工验收");
+    assert.equal(item2?.statusDetail, "AI 已生成修复，等待人工验收");
+  });
+});
+
 

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { FeedbackRuntimeInfo } from "../../lib/feedback/types";
+import type { FeedbackRecord, FeedbackRuntimeInfo } from "../../lib/feedback/types";
 import { type FixProviderKind, isAutofixEnabled } from "./config";
 import { type AiFixProvider, createAiFixProvider } from "./ai-provider";
 import type { FeedbackRepository } from "./repository";
@@ -69,10 +69,14 @@ export class FeedbackFixWorker {
     };
   }
 
-  async runNow(feedbackId?: string, targetProvider?: "agy" | "codex"): Promise<boolean> {
-    if (this.running) return false;
-    await this.sweep(false, feedbackId, targetProvider);
-    return true;
+  async runNow(feedbackId?: string, targetProvider?: "agy" | "codex"): Promise<{ started: boolean; message?: string }> {
+    if (this.running) return { started: false, message: "已有自动修复任务正在运行" };
+    const hasWork = this.repository.hasClaimableDeveloper(feedbackId, true);
+    if (!hasWork) {
+      return { started: false, message: feedbackId ? `反馈 [${feedbackId}] 当前无需自动修复` : "当前没有需要自动修复的反馈" };
+    }
+    void this.sweep(false, feedbackId, targetProvider);
+    return { started: true };
   }
 
   private schedule(delayMs: number): void {
@@ -88,49 +92,37 @@ export class FeedbackFixWorker {
       if (scheduled) this.schedule(60_000);
       return;
     }
+
+    // 1. Pre-check: only invoke AI and setup worktree if there are claimable items
+    const hasWork = this.repository.hasClaimableDeveloper(targetId, !scheduled);
+    if (!hasWork) {
+      logger.info("CICD", `Pre-check: No claimable developer feedback found (scheduled=${scheduled}, targetId=${targetId || "all"}). Skipping pipeline.`);
+      if (scheduled) this.schedule(FIVE_HOURS_MS);
+      return;
+    }
+
     this.running = true;
     logger.info("CICD", `Feedback sweep started (scheduled=${scheduled}, targetId=${targetId || "sequential_queue"})`, targetId);
     if (scheduled) this.repository.setLastSweepAt(new Date().toISOString());
-    try {
-      if (targetId) {
-        if (targetProvider) {
-          this.repository.updateTargetProvider(targetId, targetProvider);
-        }
-        const feedback = this.repository.claimDeveloperById(targetId);
-        if (feedback) {
-          await this.processFeedback(feedback.id, targetProvider);
-        } else {
-          logger.info("CICD", `Target feedback [${targetId}] could not be claimed`);
-        }
-      } else {
-        while (true) {
-          const feedback = this.repository.claimOldestDeveloper(new Date(), !scheduled);
-          if (!feedback) {
-            logger.info("CICD", `No more claimable feedback found in queue (scheduled=${scheduled})`);
-            break;
-          }
-          const success = await this.processFeedback(feedback.id, targetProvider);
-          logger.info("CICD", `Feedback [${feedback.id}] process result: ${success ? "SUCCESS" : "FAILED"}, continuing queue`);
-        }
+
+    const liveLogPath = path.join(this.root, "logs", "feedback-live.log");
+    const appendLiveLog = (text: string) => {
+      try {
+        fs.appendFileSync(liveLogPath, text, "utf8");
+      } catch {
+        // ignore
       }
-    } finally {
-      this.running = false;
-      if (scheduled) this.schedule(FIVE_HOURS_MS);
-    }
-  }
+    };
 
-  private async processFeedback(id: string, preferredProvider?: "agy" | "codex"): Promise<boolean> {
-    const feedback = this.repository.list("developer").find((item) => item.id === id);
-    if (!feedback) return false;
+    // 2. Create ONE unified test branch and ONE worktree for this entire pipeline run
+    const branchName = await this.uniqueBranchName(targetId);
     const worktreesDir = path.join(this.root, ".feedback-worktrees");
-    const worktreePath = path.join(worktreesDir, feedback.id.toLowerCase());
-    const logsDir = path.join(this.dataDir, "feedback-logs", feedback.id);
+    const worktreePath = path.join(worktreesDir, branchName.toLowerCase());
     fs.mkdirSync(worktreesDir, { recursive: true });
-    fs.mkdirSync(logsDir, { recursive: true });
-    const branchName = await this.uniqueBranchName(feedback.id);
-    let worktreeCreated = false;
 
-    logger.info("CICD", `Processing feedback [${id}] (attempt #${feedback.attempts}) on branch ${branchName}`, id);
+    let worktreeCreated = false;
+    let anySuccess = false;
+    const fixedItems: { id: string; bugTitle: string; fixSummary: string }[] = [];
 
     try {
       if (fs.existsSync(worktreePath)) {
@@ -145,24 +137,100 @@ export class FeedbackFixWorker {
       await this.mustRun("git", ["worktree", "add", "-b", branchName, worktreePath, "HEAD"], this.root, 2 * 60_000);
       worktreeCreated = true;
 
-      const activeProvider = this.getProvider(preferredProvider);
-      logger.info("CICD", `Invoking AI fix provider [${activeProvider.name}] for [${id}]`, id);
-      const liveLogPath = path.join(this.root, "logs", "feedback-live.log");
-      const appendLiveLog = (text: string) => {
-        try {
-          fs.appendFileSync(liveLogPath, text, "utf8");
-        } catch {
-          // ignore
-        }
-      };
+      appendLiveLog([
+        "",
+        "=".repeat(80),
+        `🚀【启动自动修复流水线】`,
+        `- 统一测试分支: ${branchName}`,
+        `- 隔离工作区: ${worktreePath}`,
+        `- 启动模式: ${scheduled ? "定时巡检" : "手动触发"}`,
+        "=".repeat(80),
+        "",
+      ].join("\n"));
 
+      // 3. Process items in batch sequentially on this single test branch
+      if (targetId) {
+        if (targetProvider) {
+          this.repository.updateTargetProvider(targetId, targetProvider);
+        }
+        const feedback = this.repository.claimDeveloperById(targetId);
+        if (feedback) {
+          const ok = await this.processSingleFeedback(feedback, branchName, worktreePath, targetProvider, appendLiveLog);
+          if (ok.success) {
+            anySuccess = true;
+            fixedItems.push({ id: feedback.id, bugTitle: ok.bugTitle, fixSummary: ok.fixSummary });
+          }
+        }
+      } else {
+        while (true) {
+          const feedback = this.repository.claimOldestDeveloper(new Date(), !scheduled);
+          if (!feedback) {
+            logger.info("CICD", `No more claimable feedback in queue for branch ${branchName}`);
+            break;
+          }
+          const ok = await this.processSingleFeedback(feedback, branchName, worktreePath, targetProvider, appendLiveLog);
+          if (ok.success) {
+            anySuccess = true;
+            fixedItems.push({ id: feedback.id, bugTitle: ok.bugTitle, fixSummary: ok.fixSummary });
+          }
+        }
+      }
+
+      if (anySuccess) {
+        appendLiveLog([
+          "",
+          "=".repeat(80),
+          `🎉【本轮流水线全部修复完成】`,
+          `- 统一测试分支: ${branchName}`,
+          `- 成功修复反馈条数: ${fixedItems.length}`,
+          ...fixedItems.map((item) => `  * [${item.id}] ${item.bugTitle} -> ${item.fixSummary}`),
+          `- 提示: 开发者可直接检出该分支 (git checkout ${branchName}) 进行集中验收。`,
+          "=".repeat(80),
+          "",
+        ].join("\n"));
+      } else {
+        appendLiveLog(`\n⚠️ 本轮流水线结束，未能产出任何有效修复。\n`);
+      }
+    } finally {
+      if (worktreeCreated) {
+        await runProcess("git", ["worktree", "remove", "--force", worktreePath], { cwd: this.root, timeoutMs: 2 * 60_000 }).catch(() => undefined);
+        await runProcess("git", ["worktree", "prune"], { cwd: this.root, timeoutMs: 30_000 }).catch(() => undefined);
+      }
+      if (!anySuccess) {
+        await runProcess("git", ["branch", "-D", branchName], { cwd: this.root, timeoutMs: 30_000 }).catch(() => undefined);
+      }
+      this.running = false;
+      if (scheduled) this.schedule(FIVE_HOURS_MS);
+    }
+  }
+
+  private async processSingleFeedback(
+    feedback: FeedbackRecord,
+    branchName: string,
+    worktreePath: string,
+    preferredProvider: "agy" | "codex" | undefined,
+    appendLiveLog: (text: string) => void,
+  ): Promise<{ success: boolean; bugTitle: string; fixSummary: string }> {
+    const logsDir = path.join(this.dataDir, "feedback-logs", feedback.id);
+    fs.mkdirSync(logsDir, { recursive: true });
+
+    const activeProvider = this.getProvider(preferredProvider || feedback.targetProvider);
+    logger.info("CICD", `Processing feedback [${feedback.id}] (attempt #${feedback.attempts}) with [${activeProvider.name}] on shared branch ${branchName}`, feedback.id);
+
+    appendLiveLog(`\n▶ [${feedback.id}] 开始自动修复（提交人：${feedback.playerName}，引擎：${activeProvider.name}）...\n`);
+
+    const bugTitle = feedback.content.split(/\r?\n/)[0].trim().slice(0, 80) || feedback.id;
+    let fixSummary = "代码修复与全量测试通过";
+
+    try {
+      const liveLogPath = path.join(this.root, "logs", "feedback-live.log");
       const aiResult = await activeProvider.run({ feedback, worktreePath, liveLogPath });
       fs.writeFileSync(path.join(logsDir, `attempt-${feedback.attempts}-ai.log`), aiResult.rawLog, "utf8");
 
       const changed = await this.mustRun("git", ["status", "--short"], worktreePath, 30_000);
       if (!changed.stdout.trim()) throw new Error("AI 未产生代码修改；可能无法复现或反馈信息不足");
 
-      appendLiveLog("\n\n" + "=".repeat(80) + "\n【AI 修复执行完成，开始自动化流水线测试】\n" + "-".repeat(80) + "\n");
+      appendLiveLog(`\n【AI 修复执行完成，开始自动化流水线测试 [${feedback.id}]】\n`);
       const checks = [
         ["npm", ["test"]],
         ["npm", ["run", "check"]],
@@ -170,7 +238,7 @@ export class FeedbackFixWorker {
       ] as const;
       const checkSummaries: string[] = [];
       for (const [command, args] of checks) {
-        logger.info("CICD", `Running validation check: ${command} ${args.join(" ")}`, id);
+        logger.info("CICD", `Running validation check: ${command} ${args.join(" ")}`, feedback.id);
         appendLiveLog(`⏳ 正在执行验证: ${command} ${args.join(" ")} ...\n`);
         const result = await this.mustRun(command, [...args], worktreePath, 20 * 60_000);
         checkSummaries.push(`${command} ${args.join(" ")}：通过`);
@@ -178,25 +246,35 @@ export class FeedbackFixWorker {
         fs.writeFileSync(path.join(logsDir, `attempt-${feedback.attempts}-${args.at(-1)}.log`), `${result.stdout}\n${result.stderr}`, "utf8");
       }
 
+      if (aiResult.summary) {
+        fixSummary = aiResult.summary.split(/\r?\n/)[0].trim().slice(0, 100);
+      }
+
+      const conciseBug = feedback.content.replace(/\r?\n+/g, " ").trim().slice(0, 200);
+      const commitMessage = [
+        `fix(feedback): resolve ${feedback.id} - ${bugTitle}`,
+        "",
+        `- Bug: ${conciseBug}`,
+        `- Fix: ${fixSummary}`,
+        `- Quality: ${checkSummaries.join(", ")}`,
+      ].join("\n");
+
       await this.mustRun("git", ["add", "-A"], worktreePath, 30_000);
-      await this.mustRun("git", ["-c", "user.name=RiverLab Auto Fix", "-c", "user.email=riverlab-autofix@local", "commit", "-m", `fix: resolve ${feedback.id}`], worktreePath, 2 * 60_000);
+      await this.mustRun(
+        "git",
+        ["-c", "user.name=RiverLab Auto Fix", "-c", "user.email=riverlab-autofix@local", "commit", "-m", commitMessage],
+        worktreePath,
+        60_000,
+      );
       const commit = await this.mustRun("git", ["rev-parse", "HEAD"], worktreePath, 30_000);
       const commitHash = commit.stdout.trim();
-      logger.info("CICD", `Feedback [${id}] fix committed successfully (${commitHash}) on ${branchName}`, id, {
+
+      logger.info("CICD", `Feedback [${feedback.id}] fix committed (${commitHash}) on branch ${branchName}`, feedback.id, {
         commitHash,
         provider: activeProvider.name,
       });
 
-      appendLiveLog([
-        "",
-        "=".repeat(80),
-        "🎉【自动修复成功完成】",
-        `- 分支名称: ${branchName}`,
-        `- 提交哈希: ${commitHash}`,
-        `- AI 总结: ${aiResult.summary}`,
-        "=".repeat(80),
-        "",
-      ].join("\n"));
+      appendLiveLog(`🎉 [${feedback.id}] 修复成功提交: ${commitHash.slice(0, 8)} (${fixSummary})\n`);
 
       this.repository.markAwaitingReview(feedback.id, {
         branchName,
@@ -205,41 +283,37 @@ export class FeedbackFixWorker {
         aiSummary: aiResult.summary,
         testSummary: checkSummaries.join("；"),
       });
-      return true;
+
+      return { success: true, bugTitle, fixSummary };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.error("CICD", `Feedback [${id}] auto-fix failed: ${message}`, id);
-      const liveLogPath = path.join(this.root, "logs", "feedback-live.log");
-      try {
-        fs.appendFileSync(liveLogPath, `\n\n❌【修复未完成/失败】: ${message}\n`, "utf8");
-      } catch {
-        // ignore
+      logger.error("CICD", `Feedback [${feedback.id}] auto-fix failed: ${message}`, feedback.id);
+      appendLiveLog(`❌ [${feedback.id}] 修复未通过: ${message}\n`);
+
+      const diff = await runProcess("git", ["diff", "--binary", "HEAD"], { cwd: worktreePath, timeoutMs: 30_000, maxOutputBytes: 5_000_000 }).catch(() => undefined);
+      if (diff?.stdout) {
+        fs.writeFileSync(path.join(logsDir, `attempt-${feedback.attempts}-failure.patch`), diff.stdout, "utf8");
       }
-      if (worktreeCreated) {
-        const diff = await runProcess("git", ["diff", "--binary", "HEAD"], { cwd: worktreePath, timeoutMs: 30_000, maxOutputBytes: 5_000_000 }).catch(() => undefined);
-        if (diff?.stdout) fs.writeFileSync(path.join(logsDir, `attempt-${feedback.attempts}-failure.patch`), diff.stdout, "utf8");
-      }
+
+      // Hard rollback in worktree so failed modifications don't pollute the branch or next items
+      await runProcess("git", ["reset", "--hard", "HEAD"], { cwd: worktreePath, timeoutMs: 30_000 }).catch(() => undefined);
+      await runProcess("git", ["clean", "-fd"], { cwd: worktreePath, timeoutMs: 30_000 }).catch(() => undefined);
+
       this.repository.markAttemptFailed(feedback.id, message, new Date(Date.now() + RETRY_DELAY_MS), true);
-      return false;
-    } finally {
-      if (worktreeCreated) {
-        await runProcess("git", ["worktree", "remove", "--force", worktreePath], { cwd: this.root, timeoutMs: 2 * 60_000 }).catch(() => undefined);
-      }
-      const success = this.repository.list("developer").find((item) => item.id === feedback.id)?.branchName === branchName;
-      if (!success) {
-        await runProcess("git", ["branch", "-D", branchName], { cwd: this.root, timeoutMs: 30_000 }).catch(() => undefined);
-      }
+      return { success: false, bugTitle, fixSummary: message };
     }
   }
 
-  private async uniqueBranchName(feedbackId: string): Promise<string> {
+  private async uniqueBranchName(feedbackId?: string): Promise<string> {
     const formatter = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
     });
     const parts = Object.fromEntries(formatter.formatToParts(new Date()).map((part) => [part.type, part.value]));
     const base = `CICD_${parts.month}${parts.day}_${parts.hour}${parts.minute}_bugfix`;
     const exists = await runProcess("git", ["show-ref", "--verify", "--quiet", `refs/heads/${base}`], { cwd: this.root, timeoutMs: 30_000 });
-    return exists.exitCode === 0 ? `${base}_${feedbackId.replace(/^F0*/, "") || "1"}` : base;
+    if (exists.exitCode !== 0) return base;
+    const suffix = feedbackId ? `_${feedbackId.replace(/^F0*/, "") || "1"}` : `_${Math.floor(Math.random() * 1000)}`;
+    return `${base}${suffix}`;
   }
 
   private async mustRun(command: string, args: string[], cwd: string, timeoutMs: number) {

@@ -60,6 +60,12 @@ export function createFeedbackMiddleware(runtime: FeedbackRuntime) {
         const body = await readJson(req).catch(() => ({})) as { id?: unknown; targetProvider?: unknown };
         const feedbackId = typeof body?.id === "string" && /^F\d{6}$/.test(body.id) ? body.id : undefined;
         const targetProvider = parseTargetProvider(body?.targetProvider);
+        if (!runtime.repository.hasClaimableDeveloper(feedbackId, true)) {
+          return sendJson(res, 200, {
+            accepted: false,
+            message: feedbackId ? `反馈 [${feedbackId}] 当前无需自动修复` : "当前没有需要自动修复的反馈",
+          });
+        }
         logger.info("CICD", `Manual run requested for [${feedbackId || "oldest"}]`, feedbackId, { targetProvider });
         void runtime.worker.runNow(feedbackId, targetProvider);
         return sendJson(res, 202, { accepted: true, targetId: feedbackId, provider: targetProvider });

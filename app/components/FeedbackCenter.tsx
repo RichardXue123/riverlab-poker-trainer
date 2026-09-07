@@ -168,13 +168,17 @@ export default function FeedbackCenter() {
     if (!developerKey) return;
     setBusy(true);
     try {
-      await requestJson("/api/feedback/run", {
+      const res = await requestJson<{ accepted: boolean; message?: string }>("/api/feedback/run", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-developer-key": developerKey },
         body: JSON.stringify(targetId ? { id: targetId } : {}),
       });
-      setMessage(`已启动${targetId ? `针对 [${targetId}] 的` : "一轮"}自动修复；运行期间可以关闭此窗口`);
-      window.setTimeout(() => void load("developer"), 1200);
+      if (res.accepted) {
+        setMessage(`已启动${targetId ? `针对 [${targetId}] 的` : "一轮"}自动修复；运行期间可以关闭此窗口`);
+        window.setTimeout(() => void load("developer"), 1200);
+      } else {
+        setMessage(res.message || "当前没有需要自动修复的反馈");
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "启动自动修复失败");
     } finally {

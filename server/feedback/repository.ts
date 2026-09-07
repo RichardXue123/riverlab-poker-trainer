@@ -21,6 +21,7 @@ export interface FeedbackRepository {
   create(input: CreateFeedbackInput): FeedbackRecord;
   updateStatus(id: string, status: FeedbackStatus): FeedbackRecord | undefined;
   updateTargetProvider(id: string, targetProvider: "agy" | "codex"): FeedbackRecord | undefined;
+  hasClaimableDeveloper(targetId?: string, forceImmediate?: boolean, now?: Date): boolean;
   claimOldestDeveloper(now?: Date, forceImmediate?: boolean): FeedbackRecord | undefined;
   claimDeveloperById(id: string, now?: Date): FeedbackRecord | undefined;
 
@@ -113,6 +114,24 @@ export class JsonFeedbackRepository implements FeedbackRepository {
     this.store.items.splice(index, 1);
     this.persist();
     return true;
+  }
+
+  hasClaimableDeveloper(targetId?: string, forceImmediate = false, now = new Date()): boolean {
+    const nowIso = now.toISOString();
+    if (targetId) {
+      const item = this.store.items.find((entry) => entry.id === targetId && entry.kind === "developer");
+      if (!item) return false;
+      if (item.status !== "pending") return false;
+      if (item.statusDetail?.includes("待人工处理") || item.statusDetail?.includes("已暂停")) return false;
+      if (forceImmediate) return true;
+      return item.attempts < 3 && (!item.nextAttemptAt || item.nextAttemptAt <= nowIso);
+    }
+    return this.store.items.some((entry) => {
+      if (entry.kind !== "developer" || entry.status !== "pending") return false;
+      if (entry.statusDetail?.includes("待人工处理") || entry.statusDetail?.includes("已暂停")) return false;
+      if (forceImmediate) return true;
+      return entry.attempts < 3 && (!entry.nextAttemptAt || entry.nextAttemptAt <= nowIso);
+    });
   }
 
   claimOldestDeveloper(now = new Date(), forceImmediate = false): FeedbackRecord | undefined {
