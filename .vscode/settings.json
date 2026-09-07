@@ -1,11 +1,12 @@
 {
   "files.watcherExclude": {
-    "**/.git/objects/**": true,
-    "**/.git/subtree-cache/**": true,
-    "**/.git/worktrees/**": true,
+    "**/.git/**": true,
     "**/.feedback-worktrees/**": true,
     "**/node_modules/**": true,
     "**/dist/**": true,
     "**/logs/**": true
-  }
+  },
+  "git.autorefresh": false,
+  "git.autofetch": false,
+  "git.autoRepositoryDetection": "openEditors"
 }
